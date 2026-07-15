@@ -1,0 +1,17 @@
+[project]
+name = "chandra-ocr-2-eval"
+version = "0.1.0"
+description = "Evaluation pipeline for Chandra OCR-2 and resume-to-JD matching"
+requires-python = ">=3.10,<3.13"
+
+dependencies = [
+    "chandra-ocr==0.2.0",
+    "huggingface-hub==1.23.0",
+    "hf-xet==1.5.1",
+    "pillow==12.3.0",
+    "pypdfium2==5.11.0",
+    "requests==2.34.2",
+]
+
+[tool.uv]
+package = false

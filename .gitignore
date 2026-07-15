@@ -1,0 +1,42 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Candidate data and generated results
+inputs/
+outputs/
+logs/
+notes/
+
+# Model files and third-party builds
+models/
+third_party/
+*.gguf
+*.safetensors
+
+# Large documents and archives
+*.zip
+*.tar
+*.tar.gz
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary files
+*.log
+*.tmp
+*.swp
