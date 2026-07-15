@@ -58,6 +58,7 @@ def safe_response_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "message_keys": sorted(message.keys()),
         "content_type": type(content).__name__,
         "content_length": len(content) if isinstance(content, str) else _content_parts_length(content),
+        "reasoning_content_type": type(reasoning).__name__,
         "reasoning_content_length": len(reasoning) if isinstance(reasoning, str) else 0,
         "has_tool_calls": bool(message.get("tool_calls")),
         "has_refusal": bool(message.get("refusal")),

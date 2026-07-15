@@ -236,7 +236,7 @@ class ResumeStructuringTests(unittest.TestCase):
             )
             client = FakeGemmaClient([_message_payload("")])
 
-            with self.assertRaises(ModelResponseError):
+            with self.assertRaises(ModelResponseError) as context:
                 structure_resume_from_ocr(
                     raw,
                     candidate_id="candidate-006",
@@ -245,8 +245,14 @@ class ResumeStructuringTests(unittest.TestCase):
                     settings=Settings(llm_max_retries=0, pipeline_debug_raw_responses=False),
                 )
 
-            self.assertTrue((root / "resume-structuring-error-metadata.json").is_file())
-            self.assertFalse((root / "resume-structuring-raw-responses.json").exists())
+            self.assertIn("response_metadata", str(context.exception))
+            self.assertIn("requested_max_tokens", str(context.exception))
+            metadata_path = root / "resume-structuring-error-metadata.json"
+            self.assertTrue(metadata_path.is_file())
+            metadata_text = metadata_path.read_text(encoding="utf-8")
+            self.assertIn("content_length", metadata_text)
+            self.assertNotIn('<p data-label="Text"', metadata_text)
+            self.assertFalse((root / "structured-resume-gemma-response.json").exists())
 
     def test_raw_response_written_only_when_debug_enabled_and_length_fails(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -271,7 +277,7 @@ class ResumeStructuringTests(unittest.TestCase):
             )
             client = FakeGemmaClient([_message_payload('{"candidate_id": "x"}', finish_reason="length")])
 
-            with self.assertRaises(ModelResponseError):
+            with self.assertRaises(ModelResponseError) as context:
                 structure_resume_from_ocr(
                     raw,
                     candidate_id="candidate-007",
@@ -280,7 +286,11 @@ class ResumeStructuringTests(unittest.TestCase):
                     settings=Settings(llm_max_retries=0, pipeline_debug_raw_responses=True),
                 )
 
-            self.assertTrue((root / "resume-structuring-raw-responses.json").is_file())
+            self.assertIn("finish_reason=length", str(context.exception))
+            raw_path = root / "structured-resume-gemma-response.json"
+            self.assertTrue(raw_path.is_file())
+            raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
+            self.assertEqual(raw_payload[0]["choices"][0]["finish_reason"], "length")
 
 
 if __name__ == "__main__":

@@ -123,6 +123,7 @@ def _structure_resume_with_gemma(
                 {
                     "attempt": attempt + 1,
                     "used_response_format": response_format is not None,
+                    "requested_max_tokens": settings.gemma_resume_max_tokens,
                     "error_type": type(error).__name__,
                     "error": str(error),
                     "prompt_block_count": len(ocr_document.blocks),
@@ -137,9 +138,21 @@ def _structure_resume_with_gemma(
         raw_payloads=raw_payloads,
         debug_raw=settings.pipeline_debug_raw_responses,
     )
+    failure_summary = json.dumps(
+        {
+            "failures": failures,
+            "raw_response_path": (
+                str(output_path.parent / "structured-resume-gemma-response.json")
+                if settings.pipeline_debug_raw_responses
+                else None
+            ),
+        },
+        sort_keys=True,
+    )
     raise ModelResponseError(
         "Gemma resume structuring failed after retries; "
-        f"safe metadata written to {output_path.parent / 'resume-structuring-error-metadata.json'}"
+        f"safe metadata written to {output_path.parent / 'resume-structuring-error-metadata.json'}; "
+        f"{failure_summary}"
     ) from last_error
 
 
@@ -214,7 +227,7 @@ def _persist_resume_failure_debug(
         encoding="utf-8",
     )
     if debug_raw:
-        (output_path.parent / "resume-structuring-raw-responses.json").write_text(
+        (output_path.parent / "structured-resume-gemma-response.json").write_text(
             json.dumps(raw_payloads, indent=2),
             encoding="utf-8",
         )

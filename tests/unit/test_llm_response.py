@@ -48,6 +48,7 @@ class LlmResponseTests(unittest.TestCase):
 
         self.assertEqual(metadata["content_length"], len("private resume text"))
         self.assertNotIn("private resume text", str(metadata))
+        self.assertEqual(metadata["reasoning_content_type"], "str")
         self.assertEqual(metadata["reasoning_content_length"], len("private"))
 
     def test_parse_json_variants(self) -> None:
