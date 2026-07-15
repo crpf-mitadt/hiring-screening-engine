@@ -1,11 +1,16 @@
 """Job-description loading and simple synthetic extraction."""
 
+from dataclasses import dataclass
 import json
 import re
 from pathlib import Path
 
 from docx import Document
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+import pypdfium2 as pdfium
 
+from chandra_eval.exceptions import DocumentIngestionError, ScannedPdfRequiresOcrError
 from chandra_eval.schemas.common import EvidenceRef, EvidenceStatus
 from chandra_eval.schemas.jd import (
     JDRequirement,
@@ -14,6 +19,15 @@ from chandra_eval.schemas.jd import (
     ScoringCriterion,
     StructuredJD,
 )
+
+
+@dataclass(frozen=True)
+class IngestedDocument:
+    source_document_id: str
+    text: str
+    content_type: str
+    page_count: int | None = None
+    warnings: tuple[str, ...] = ()
 
 
 def load_structured_jd(path: Path) -> StructuredJD:
@@ -27,31 +41,103 @@ def write_structured_jd(jd: StructuredJD, path: Path) -> Path:
 
 
 def read_jd_document(path: Path | str) -> str:
+    return ingest_jd_document(path).text
+
+
+def ingest_jd_document(path: Path | str) -> IngestedDocument:
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix == ".docx":
-        return read_docx_text(path)
+        return IngestedDocument(
+            source_document_id=path.name,
+            text=read_docx_text(path),
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
     if suffix in {"", ".txt", ".md"}:
-        return path.read_text(encoding="utf-8")
-    raise ValueError(f"Unsupported JD input format: {suffix or '<none>'}")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise DocumentIngestionError(
+                f"{path} is not valid UTF-8. Convert the text encoding or use DOCX/PDF input."
+            ) from error
+        return IngestedDocument(
+            source_document_id=path.name,
+            text=text,
+            content_type="text/markdown" if suffix == ".md" else "text/plain",
+        )
+    if suffix == ".pdf":
+        text, page_count = read_pdf_text(path)
+        return IngestedDocument(
+            source_document_id=path.name,
+            text=text,
+            content_type="application/pdf",
+            page_count=page_count,
+        )
+    raise DocumentIngestionError(
+        f"Unsupported JD input format: {suffix or '<none>'}. Supported: .docx, .txt, .md, .pdf."
+    )
 
 
 def read_docx_text(path: Path | str) -> str:
     document = Document(str(path))
     parts: list[str] = []
 
-    for paragraph in document.paragraphs:
-        text = paragraph.text.strip()
-        if text:
-            parts.append(text)
-
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if cells:
-                parts.append(" | ".join(cells))
+    for block in _iter_docx_blocks(document):
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if not text:
+                continue
+            style_name = block.style.name if block.style is not None else ""
+            if style_name.lower().startswith("heading"):
+                parts.append(f"# {text}")
+            else:
+                parts.append(text)
+        elif isinstance(block, Table):
+            for row in block.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
 
     return "\n".join(parts)
+
+
+def read_pdf_text(path: Path | str, min_text_characters: int = 20) -> tuple[str, int]:
+    path = Path(path)
+    document = pdfium.PdfDocument(str(path))
+    pages: list[str] = []
+    try:
+        for index in range(len(document)):
+            page = document[index]
+            try:
+                text_page = page.get_textpage()
+                try:
+                    text = text_page.get_text_range().strip()
+                finally:
+                    text_page.close()
+            finally:
+                page.close()
+            pages.append(f"[Page {index + 1}]\n{text}".strip())
+    finally:
+        page_count = len(document)
+        document.close()
+
+    merged = "\n\n".join(page for page in pages if page.strip())
+    plain_text = re.sub(r"\[Page \d+\]", "", merged).strip()
+    if len(plain_text) < min_text_characters:
+        raise ScannedPdfRequiresOcrError(
+            f"{path} has little or no embedded text. Run Chandra OCR for scanned PDFs."
+        )
+    return merged, page_count
+
+
+def _iter_docx_blocks(document) -> list[Paragraph | Table]:
+    blocks: list[Paragraph | Table] = []
+    for child in document.element.body.iterchildren():
+        if child.tag.endswith("}p"):
+            blocks.append(Paragraph(child, document))
+        elif child.tag.endswith("}tbl"):
+            blocks.append(Table(child, document))
+    return blocks
 
 
 def extract_synthetic_jd(text: str, job_id: str, source_document_id: str) -> StructuredJD:
@@ -95,6 +181,7 @@ def extract_synthetic_jd(text: str, job_id: str, source_document_id: str) -> Str
     return StructuredJD(
         job_id=job_id,
         source_document_id=source_document_id,
+        extraction_method="deterministic_fallback",
         job_title=_extract_title(text),
         role_summary=text.splitlines()[0].strip() if text.splitlines() else "",
         mandatory_requirements=requirements,
@@ -134,7 +221,8 @@ def extract_synthetic_jd(text: str, job_id: str, source_document_id: str) -> Str
 def _extract_title(text: str) -> str:
     for line in text.splitlines():
         if line.strip():
-            return line.strip().removeprefix("Title:").strip()
+            cleaned = line.strip().lstrip("#").strip()
+            return cleaned.removeprefix("Title:").strip()
     return "Untitled role"
 
 

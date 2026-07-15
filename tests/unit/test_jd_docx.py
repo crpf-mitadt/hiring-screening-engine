@@ -21,7 +21,12 @@ class JDDocxTests(unittest.TestCase):
             document.add_paragraph("Minimum experience: 2 years")
             document.save(docx_path)
 
-            jd = structure_jd_document_file(docx_path, "job-docx-001", output_path)
+            jd = structure_jd_document_file(
+                docx_path,
+                "job-docx-001",
+                output_path,
+                mock_llm=True,
+            )
 
             self.assertTrue(output_path.is_file())
             self.assertEqual(jd.job_title, "Document AI Engineer")

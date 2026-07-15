@@ -2,9 +2,9 @@
 
 from enum import Enum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from chandra_eval.schemas.common import EvidenceRef, StrictBaseModel
+from chandra_eval.schemas.common import EvidenceRef, ExtractionMethod, StrictBaseModel
 
 
 class RequirementCategory(str, Enum):
@@ -57,6 +57,7 @@ class ScoringCriterion(StrictBaseModel):
 class StructuredJD(StrictBaseModel):
     job_id: str
     source_document_id: str
+    extraction_method: ExtractionMethod = ExtractionMethod.DETERMINISTIC_FALLBACK
     job_title: str
     department: str = ""
     role_summary: str = ""
@@ -70,3 +71,11 @@ class StructuredJD(StrictBaseModel):
     seniority: str = ""
     scoring_rubric: list[ScoringCriterion] = Field(default_factory=list)
     extraction_warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_rubric_weight(self) -> "StructuredJD":
+        if self.scoring_rubric:
+            total = sum(criterion.weight for criterion in self.scoring_rubric)
+            if round(total, 3) != 100:
+                raise ValueError(f"scoring_rubric weights must total 100, got {total}")
+        return self

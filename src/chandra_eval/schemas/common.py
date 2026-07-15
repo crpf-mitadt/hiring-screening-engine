@@ -26,6 +26,12 @@ class DatePrecision(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ExtractionMethod(str, Enum):
+    LIVE_GEMMA = "live_gemma"
+    MOCK_GEMMA = "mock_gemma"
+    DETERMINISTIC_FALLBACK = "deterministic_fallback"
+
+
 class EvidenceRef(StrictBaseModel):
     source_type: str
     source_document_id: str
