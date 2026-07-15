@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from docx import Document
+
 from chandra_eval.schemas.common import EvidenceRef, EvidenceStatus
 from chandra_eval.schemas.jd import (
     JDRequirement,
@@ -22,6 +24,34 @@ def write_structured_jd(jd: StructuredJD, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(jd.model_dump(mode="json"), indent=2), encoding="utf-8")
     return path
+
+
+def read_jd_document(path: Path | str) -> str:
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".docx":
+        return read_docx_text(path)
+    if suffix in {"", ".txt", ".md"}:
+        return path.read_text(encoding="utf-8")
+    raise ValueError(f"Unsupported JD input format: {suffix or '<none>'}")
+
+
+def read_docx_text(path: Path | str) -> str:
+    document = Document(str(path))
+    parts: list[str] = []
+
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if text:
+            parts.append(text)
+
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+
+    return "\n".join(parts)
 
 
 def extract_synthetic_jd(text: str, job_id: str, source_document_id: str) -> StructuredJD:
