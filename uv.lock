@@ -72,22 +72,30 @@ wheels = [
 [[package]]
 name = "chandra-ocr-2-eval"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
+    { name = "beautifulsoup4" },
     { name = "chandra-ocr" },
     { name = "hf-xet" },
     { name = "huggingface-hub" },
+    { name = "openai" },
     { name = "pillow" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "pypdfium2" },
     { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "beautifulsoup4", specifier = "==4.15.0" },
     { name = "chandra-ocr", specifier = "==0.2.0" },
     { name = "hf-xet", specifier = "==1.5.1" },
     { name = "huggingface-hub", specifier = "==1.23.0" },
+    { name = "openai", specifier = "==2.45.0" },
     { name = "pillow", specifier = "==12.3.0" },
+    { name = "pydantic", specifier = "==2.13.4" },
+    { name = "pydantic-settings", specifier = "==2.14.2" },
     { name = "pypdfium2", specifier = "==5.11.0" },
     { name = "requests", specifier = "==2.34.2" },
 ]

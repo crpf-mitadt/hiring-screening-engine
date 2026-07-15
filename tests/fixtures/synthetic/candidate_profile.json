@@ -1,0 +1,50 @@
+{
+  "candidate_id": "candidate-001",
+  "source_document_id": "synthetic-resume-001",
+  "summary": "Software engineer with OCR evaluation and reporting experience.",
+  "education": [
+    {
+      "degree_level": "bachelor",
+      "degree_name": "B.Tech",
+      "field_of_study": "Computer Science",
+      "institution": "Synthetic Institute",
+      "completion_status": "completed",
+      "evidence": []
+    }
+  ],
+  "experience": [
+    {
+      "title": "Software Engineer",
+      "organization": "Synthetic Labs",
+      "industry_or_domain": "document AI",
+      "employment_type": "full-time",
+      "start_date": "2021-01",
+      "end_date": "2025-01",
+      "start_date_precision": "month",
+      "end_date_precision": "month",
+      "currently_active": false,
+      "responsibilities": ["Built OCR evaluation pipelines"],
+      "achievements": ["Created auditable reports"],
+      "skills_used": ["Python", "OCR", "Pydantic", "reporting"],
+      "evidence": []
+    }
+  ],
+  "skills": ["Python", "OCR", "evaluation", "data validation", "Pydantic"],
+  "certifications": [],
+  "projects": ["Resume OCR evaluation pipeline"],
+  "publications": [],
+  "teaching_experience": [],
+  "research_experience": ["OCR layout assessment"],
+  "leadership_experience": [],
+  "achievements": ["Reduced manual review effort with structured outputs"],
+  "languages": ["English"],
+  "missing_information": [],
+  "extraction_warnings": [],
+  "source_pages": [1],
+  "personal_information": {
+    "name": "Synthetic Candidate",
+    "email": "candidate@example.test",
+    "phone": "+1-555-0100",
+    "address": "Private"
+  }
+}

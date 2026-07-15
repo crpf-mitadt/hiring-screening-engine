@@ -43,7 +43,17 @@ The actual model server runs on Tyrone and is not included in this repository.
 ## Project structure
 
     scripts/
-        OCR evaluation and utility scripts
+        OCR evaluation, offline pilot, and reporting scripts
+
+    src/chandra_eval/
+        Typed resume/JD schemas, safety filtering, deterministic scoring,
+        report writers, and configurable Chandra/Gemma clients
+
+    tests/
+        Offline synthetic fixtures and regression tests
+
+    docs/
+        Architecture, scoring, privacy/fairness, and Tyrone runbook notes
 
     inputs/
         Local resumes and job descriptions
@@ -85,3 +95,13 @@ The planned next phase is a resume-to-job-description evaluation pipeline:
         -> evidence-backed candidate report
 
 The scoring pipeline should use synthetic data for local development and testing. Real candidate data should remain on Tyrone.
+
+## Offline synthetic pilot
+
+The local Mac workflow does not require live Chandra or Gemma services:
+
+    uv sync --frozen
+    uv run python -m unittest discover -s tests
+    uv run python scripts/run_matching_pilot.py
+
+The pilot writes JSON, CSV, and HTML reports and always preserves `human_review_required=true`.

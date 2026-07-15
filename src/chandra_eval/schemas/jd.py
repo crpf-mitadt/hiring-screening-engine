@@ -1,0 +1,72 @@
+"""Job-description schemas."""
+
+from enum import Enum
+
+from pydantic import Field
+
+from chandra_eval.schemas.common import EvidenceRef, StrictBaseModel
+
+
+class RequirementCategory(str, Enum):
+    EDUCATION = "education"
+    EXPERIENCE = "experience"
+    SKILL = "skill"
+    CERTIFICATION = "certification"
+    DOMAIN = "domain"
+    RESPONSIBILITY = "responsibility"
+    RESEARCH = "research"
+    TEACHING = "teaching"
+    LEADERSHIP = "leadership"
+    PROJECT = "project"
+    LANGUAGE = "language"
+    OTHER = "other"
+
+
+class RequirementType(str, Enum):
+    MINIMUM = "minimum"
+    PREFERRED = "preferred"
+    EQUIVALENT_ACCEPTED = "equivalent_accepted"
+    INFORMATIONAL = "informational"
+
+
+class JDRequirement(StrictBaseModel):
+    requirement_id: str
+    category: RequirementCategory
+    description: str
+    requirement_type: RequirementType = RequirementType.INFORMATIONAL
+    mandatory: bool = False
+    preferred: bool = False
+    minimum_value: float | None = None
+    unit: str | None = None
+    accepted_equivalents: list[str] = Field(default_factory=list)
+    evidence: list[EvidenceRef] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ScoringCriterion(StrictBaseModel):
+    criterion_id: str
+    name: str
+    category: RequirementCategory
+    description: str
+    weight: float = Field(ge=0)
+    mandatory: bool = False
+    accepted_evidence: list[str] = Field(default_factory=list)
+    scoring_guidance: str = ""
+
+
+class StructuredJD(StrictBaseModel):
+    job_id: str
+    source_document_id: str
+    job_title: str
+    department: str = ""
+    role_summary: str = ""
+    responsibilities: list[str] = Field(default_factory=list)
+    mandatory_requirements: list[JDRequirement] = Field(default_factory=list)
+    preferred_requirements: list[JDRequirement] = Field(default_factory=list)
+    required_skills: list[str] = Field(default_factory=list)
+    preferred_skills: list[str] = Field(default_factory=list)
+    minimum_experience_months: int | None = None
+    domain: str = ""
+    seniority: str = ""
+    scoring_rubric: list[ScoringCriterion] = Field(default_factory=list)
+    extraction_warnings: list[str] = Field(default_factory=list)
