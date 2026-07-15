@@ -9,10 +9,20 @@ from chandra_eval.pipeline.jd_structuring import structure_jd_document_file
 class FakeGemmaClient:
     def __init__(self, content: str):
         self.content = content
+        self.calls = []
 
-    def chat(self, messages, max_tokens=4096):
-        self.messages = messages
-        return self.content
+    def chat_response(self, messages, max_tokens=4096, response_format=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "response_format": response_format,
+            }
+        )
+        return {
+            "model": "gemma4-12b",
+            "choices": [{"finish_reason": "stop", "message": {"content": self.content}}],
+        }
 
 
 class JDStructuringTests(unittest.TestCase):
@@ -75,17 +85,19 @@ class JDStructuringTests(unittest.TestCase):
                 ],
             }
 
+            client = FakeGemmaClient("Here is JSON:\n" + json.dumps(payload))
             jd = structure_jd_document_file(
                 input_path,
                 "marketing-coordinator",
                 output_path,
-                gemma_client=FakeGemmaClient("Here is JSON:\n" + json.dumps(payload)),
+                gemma_client=client,
             )
 
             self.assertEqual(jd.extraction_method.value, "live_gemma")
             self.assertEqual(jd.job_id, "marketing-coordinator")
             self.assertEqual(jd.required_skills, ["SEO"])
             self.assertEqual(sum(item.weight for item in jd.scoring_rubric), 100)
+            self.assertEqual(client.calls[0]["response_format"], {"type": "json_object"})
 
     def test_bad_weight_total_fails_validation(self) -> None:
         with TemporaryDirectory() as tmp:

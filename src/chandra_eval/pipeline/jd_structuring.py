@@ -10,6 +10,7 @@ from chandra_eval.ingestion.jd_document import (
 )
 from chandra_eval.llm.gemma_client import GemmaClient
 from chandra_eval.llm.prompts import JD_STRUCTURING_SYSTEM_PROMPT
+from chandra_eval.llm.response import extract_assistant_text
 from chandra_eval.llm.structured_output import parse_model
 from chandra_eval.schemas.common import ExtractionMethod
 from chandra_eval.schemas.jd import StructuredJD
@@ -75,7 +76,7 @@ def _extract_jd_with_gemma(
     client: GemmaClient,
 ) -> StructuredJD:
     schema_hint = StructuredJD.model_json_schema()
-    content = client.chat(
+    payload = client.chat_response(
         [
             {"role": "system", "content": JD_STRUCTURING_SYSTEM_PROMPT},
             {
@@ -91,8 +92,10 @@ def _extract_jd_with_gemma(
                     f"{document_text}"
                 ),
             },
-        ]
+        ],
+        response_format={"type": "json_object"},
     )
+    content = extract_assistant_text(payload).text
     jd = parse_model(content, StructuredJD)
     jd.job_id = job_id
     jd.source_document_id = source_document_id

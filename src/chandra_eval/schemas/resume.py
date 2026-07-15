@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from chandra_eval.schemas.common import (
     DatePrecision,
@@ -33,11 +33,15 @@ class CompletionStatus(str, Enum):
     NOT_FOUND = "not_found"
 
 
+def _none_to_list(value):
+    return [] if value is None else value
+
+
 class EducationEntry(StrictBaseModel):
     degree_level: DegreeLevel = DegreeLevel.UNKNOWN
-    degree_name: str = ""
-    field_of_study: str = ""
-    institution: str = ""
+    degree_name: str | None = None
+    field_of_study: str | None = None
+    institution: str | None = None
     start_date: str | None = None
     end_date: str | None = None
     graduation_year: int | None = None
@@ -46,12 +50,17 @@ class EducationEntry(StrictBaseModel):
     evidence: list[EvidenceRef] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
+    @field_validator("evidence", "warnings", mode="before")
+    @classmethod
+    def _collections_default_empty(cls, value):
+        return _none_to_list(value)
+
 
 class ExperienceEntry(StrictBaseModel):
-    title: str = ""
-    organization: str = ""
-    industry_or_domain: str = ""
-    employment_type: str = ""
+    title: str | None = None
+    organization: str | None = None
+    industry_or_domain: str | None = None
+    employment_type: str | None = None
     start_date: str | None = None
     end_date: str | None = None
     start_date_precision: DatePrecision = DatePrecision.UNKNOWN
@@ -62,6 +71,18 @@ class ExperienceEntry(StrictBaseModel):
     skills_used: list[str] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "responsibilities",
+        "achievements",
+        "skills_used",
+        "evidence",
+        "warnings",
+        mode="before",
+    )
+    @classmethod
+    def _collections_default_empty(cls, value):
+        return _none_to_list(value)
 
 
 class ScoringSafeProfile(StrictBaseModel):
@@ -81,6 +102,27 @@ class ScoringSafeProfile(StrictBaseModel):
     missing_information: list[str] = Field(default_factory=list)
     extraction_warnings: list[str] = Field(default_factory=list)
     source_pages: list[int] = Field(default_factory=list)
+
+    @field_validator(
+        "education",
+        "experience",
+        "skills",
+        "certifications",
+        "projects",
+        "publications",
+        "teaching_experience",
+        "research_experience",
+        "leadership_experience",
+        "achievements",
+        "languages",
+        "missing_information",
+        "extraction_warnings",
+        "source_pages",
+        mode="before",
+    )
+    @classmethod
+    def _collections_default_empty(cls, value):
+        return _none_to_list(value)
 
 
 class CandidateProfile(StrictBaseModel):
@@ -104,6 +146,27 @@ class CandidateProfile(StrictBaseModel):
     source_pages: list[int] = Field(default_factory=list)
     personal_information: dict[str, Any] | None = None
     scoring_safe_profile: ScoringSafeProfile | None = None
+
+    @field_validator(
+        "education",
+        "experience",
+        "skills",
+        "certifications",
+        "projects",
+        "publications",
+        "teaching_experience",
+        "research_experience",
+        "leadership_experience",
+        "achievements",
+        "languages",
+        "missing_information",
+        "extraction_warnings",
+        "source_pages",
+        mode="before",
+    )
+    @classmethod
+    def _collections_default_empty(cls, value):
+        return _none_to_list(value)
 
     @model_validator(mode="after")
     def ensure_safe_profile(self) -> "CandidateProfile":

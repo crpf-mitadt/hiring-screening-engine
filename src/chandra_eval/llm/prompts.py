@@ -3,7 +3,8 @@
 RESUME_STRUCTURING_SYSTEM_PROMPT = (
     "Extract only job-related resume facts into the requested JSON schema. "
     "Do not infer protected traits. Do not include contact details in the "
-    "scoring-safe profile."
+    "scoring-safe profile. Use null for missing optional facts, not empty "
+    "strings or invented values."
 )
 
 JD_STRUCTURING_SYSTEM_PROMPT = (

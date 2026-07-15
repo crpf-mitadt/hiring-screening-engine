@@ -13,6 +13,17 @@ The offline flow is:
 
 The Gemma and Chandra clients are configurable wrappers for Tyrone pilots. Unit and integration tests do not call live services.
 
+Gemma structured requests retain the full OpenAI-compatible response until assistant content has
+been extracted and validated. Safe error metadata is available for failed responses without logging
+private content by default. Raw failed Gemma responses are persisted only when
+`PIPELINE_DEBUG_RAW_RESPONSES=true`.
+
+Resume structuring uses nullable optional facts instead of empty strings for genuinely missing
+values. When JSON parses but validation fails, the pipeline performs a targeted schema repair using
+the parsed JSON and validation paths rather than resending OCR text. `response_format` remains
+enabled unless the API explicitly rejects it, and structured requests disable Gemma thinking with
+`chat_template_kwargs={"enable_thinking":false}`.
+
 ## Pipeline Contract
 
 The stable live contract is:

@@ -1,10 +1,19 @@
 """Resume structuring from Chandra OCR artifacts."""
 
 import json
+import time
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from chandra_eval.config import Settings, load_settings
-from chandra_eval.exceptions import ModelResponseError
+from chandra_eval.exceptions import (
+    APICompatibilityError,
+    EmptyModelResponseError,
+    FinalResponseTruncatedError,
+    ModelResponseError,
+    StructuredExtractionError,
+)
 from chandra_eval.ingestion.resume_document import (
     OcrDocument,
     evidence_from_block,
@@ -16,7 +25,7 @@ from chandra_eval.ingestion.resume_document import (
 from chandra_eval.llm.gemma_client import GemmaClient
 from chandra_eval.llm.prompts import RESUME_STRUCTURING_SYSTEM_PROMPT
 from chandra_eval.llm.response import extract_assistant_text, safe_response_metadata
-from chandra_eval.llm.structured_output import parse_model
+from chandra_eval.llm.structured_output import parse_json_object
 from chandra_eval.safety.candidate_sanitizer import build_scoring_safe_profile
 from chandra_eval.schemas.common import ExtractionMethod
 from chandra_eval.schemas.resume import CandidateProfile, ExperienceEntry
@@ -68,7 +77,7 @@ def _structure_resume_with_gemma(
     if not prompt_text.strip():
         raise ValueError("OCR content is empty after safety filtering")
     schema_hint = CandidateProfile.model_json_schema()
-    base_messages = _resume_messages(
+    messages = _resume_messages(
         candidate_id=candidate_id,
         source_document_id=ocr_document.source_document_id,
         schema_hint=schema_hint,
@@ -79,26 +88,17 @@ def _structure_resume_with_gemma(
     failures: list[dict] = []
     raw_payloads: list[dict] = []
     last_error: Exception | None = None
+    request_kind = "full_extraction"
+    response_format: dict | None = {"type": "json_object"}
+    response_format_fallback_used = False
 
     for attempt in range(max_attempts):
-        response_format = {"type": "json_object"} if attempt == 0 else None
-        messages = base_messages
-        if attempt == 1:
-            messages = _resume_messages(
-                candidate_id=candidate_id,
-                source_document_id=ocr_document.source_document_id,
-                schema_hint=schema_hint,
-                prompt_text=prompt_text,
-                strict_schema=False,
-            )
-        elif attempt >= 2:
-            messages = _repair_messages(
-                schema_hint=schema_hint,
-                parsing_error=str(last_error),
-                invalid_response_excerpt=_safe_excerpt_from_failures(failures),
-            )
-
         payload: dict | None = None
+        metadata: dict = {}
+        json_parse_success = False
+        validation_success = False
+        validation_errors: list[dict] = []
+        started_at = time.perf_counter()
         try:
             payload = client.chat_response(
                 messages,
@@ -107,30 +107,118 @@ def _structure_resume_with_gemma(
             )
             raw_payloads.append(payload)
             assistant = extract_assistant_text(payload)
-            finish_reason = assistant.metadata.get("finish_reason")
+            metadata = assistant.metadata
+            finish_reason = metadata.get("finish_reason")
             if finish_reason == "length":
-                raise ModelResponseError(
+                raise FinalResponseTruncatedError(
                     "Gemma resume response was truncated with finish_reason=length; "
-                    f"retry with GEMMA_RESUME_MAX_TOKENS>{settings.gemma_resume_max_tokens}"
+                    "keeping GEMMA_RESUME_MAX_TOKENS=8192 unless final JSON truncation is proven"
                 )
-            candidate = parse_model(assistant.text, CandidateProfile)
+            parsed = parse_json_object(assistant.text)
+            json_parse_success = True
+            try:
+                candidate = CandidateProfile.model_validate(parsed)
+                validation_success = True
+            except ValidationError as error:
+                validation_errors = _concise_validation_errors(error)
+                last_error = error
+                failures.append(
+                    _attempt_failure(
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        request_kind=request_kind,
+                        response_format=response_format,
+                        response_format_fallback_used=response_format_fallback_used,
+                        settings=settings,
+                        ocr_document=ocr_document,
+                        prompt_text=prompt_text,
+                        error_type="SchemaValidationError",
+                        error="CandidateProfile validation failed",
+                        metadata=metadata,
+                        elapsed_seconds=time.perf_counter() - started_at,
+                        json_parse_success=json_parse_success,
+                        validation_success=validation_success,
+                        validation_errors=validation_errors,
+                    )
+                )
+                if attempt + 1 >= max_attempts:
+                    break
+                messages = _schema_validation_repair_messages(
+                    existing_json=parsed,
+                    validation_errors=validation_errors,
+                    schema_hint=schema_hint,
+                )
+                request_kind = "schema_validation_repair"
+                response_format = {"type": "json_object"}
+                continue
             candidate.extraction_method = ExtractionMethod.LIVE_GEMMA
             return candidate
+        except APICompatibilityError as error:
+            last_error = error
+            failures.append(
+                _attempt_failure(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    request_kind=request_kind,
+                    response_format=response_format,
+                    response_format_fallback_used=response_format_fallback_used,
+                    settings=settings,
+                    ocr_document=ocr_document,
+                    prompt_text=prompt_text,
+                    error_type="APICompatibilityError",
+                    error=str(error),
+                    metadata=metadata,
+                    elapsed_seconds=time.perf_counter() - started_at,
+                    json_parse_success=json_parse_success,
+                    validation_success=validation_success,
+                    validation_errors=validation_errors,
+                )
+            )
+            if response_format is not None and attempt + 1 < max_attempts:
+                response_format = None
+                response_format_fallback_used = True
+                continue
+            break
         except Exception as error:
             last_error = error
-            metadata = safe_response_metadata(payload or {}) if payload is not None else {}
+            metadata = metadata or (safe_response_metadata(payload or {}) if payload is not None else {})
+            error_type = _classified_error_type(error)
             failures.append(
-                {
-                    "attempt": attempt + 1,
-                    "used_response_format": response_format is not None,
-                    "requested_max_tokens": settings.gemma_resume_max_tokens,
-                    "error_type": type(error).__name__,
-                    "error": str(error),
-                    "prompt_block_count": len(ocr_document.blocks),
-                    "prompt_text_length": len(prompt_text),
-                    "response_metadata": metadata,
-                }
+                _attempt_failure(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    request_kind=request_kind,
+                    response_format=response_format,
+                    response_format_fallback_used=response_format_fallback_used,
+                    settings=settings,
+                    ocr_document=ocr_document,
+                    prompt_text=prompt_text,
+                    error_type=error_type,
+                    error=_safe_error_message(error, error_type),
+                    metadata=metadata,
+                    elapsed_seconds=time.perf_counter() - started_at,
+                    json_parse_success=json_parse_success,
+                    validation_success=validation_success,
+                    validation_errors=validation_errors,
+                )
             )
+            if attempt + 1 >= max_attempts:
+                break
+            if isinstance(error, EmptyModelResponseError):
+                request_kind = "full_extraction"
+                response_format = {"type": "json_object"}
+                continue
+            if isinstance(error, FinalResponseTruncatedError):
+                break
+            messages = _malformed_json_repair_messages(
+                invalid_response_excerpt=_safe_model_output_excerpt(
+                    extract_assistant_text(payload).text if payload else ""
+                ),
+                parsing_error=_safe_error_message(error, error_type),
+                schema_hint=schema_hint,
+            )
+            request_kind = "malformed_json_repair"
+            response_format = {"type": "json_object"}
 
     _persist_resume_failure_debug(
         output_path=output_path,
@@ -149,7 +237,7 @@ def _structure_resume_with_gemma(
         },
         sort_keys=True,
     )
-    raise ModelResponseError(
+    raise StructuredExtractionError(
         "Gemma resume structuring failed after retries; "
         f"safe metadata written to {output_path.parent / 'resume-structuring-error-metadata.json'}; "
         f"{failure_summary}"
@@ -175,6 +263,11 @@ def _resume_messages(
                 f"source_document_id to {source_document_id!r}, "
                 "and extraction_method to 'live_gemma'. "
                 "Do not include name, photograph, email, phone, address, or protected traits. "
+                "Extract only facts supported by the supplied OCR. Use null when an optional fact "
+                "is unavailable, omitted, unreadable, or genuinely ambiguous. Never invent a value "
+                "to satisfy the schema. Never replace missing facts with empty strings. Use empty "
+                "lists only when the source contains no items for a collection. Use an unknown enum "
+                "only when that exact enum member exists in the schema. "
                 "Every extracted job-related fact should include EvidenceRef entries "
                 "using page_number and block_index from the OCR lines where possible. "
                 f"{mode}\n"
@@ -186,32 +279,133 @@ def _resume_messages(
     ]
 
 
-def _repair_messages(
+def _schema_validation_repair_messages(
     *,
+    existing_json: dict,
+    validation_errors: list[dict],
     schema_hint: dict,
-    parsing_error: str,
-    invalid_response_excerpt: str,
 ) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": RESUME_STRUCTURING_SYSTEM_PROMPT},
         {
             "role": "user",
             "content": (
-                "Repair the previous CandidateProfile output. Return exactly one valid JSON object. "
-                "Do not include prose or markdown fences. "
-                f"Schema requirement:\n{schema_hint}\n\n"
-                f"Parsing or validation error:\n{parsing_error}\n\n"
+                "The supplied JSON has already been extracted from the resume. Correct only fields "
+                "implicated by the validation errors. Retain every unrelated value unchanged. Do not "
+                "add unsupported resume facts. Do not rewrite, summarize, or improve valid content. "
+                "Use null for unavailable optional facts. Return the complete corrected JSON object "
+                "with no commentary outside the structured response.\n\n"
+                f"CandidateProfile JSON schema:\n{schema_hint}\n\n"
+                f"Validation errors:\n{json.dumps(validation_errors, indent=2)}\n\n"
+                f"Existing JSON object:\n{json.dumps(existing_json, indent=2)}"
+            ),
+        },
+    ]
+
+
+def _malformed_json_repair_messages(
+    *,
+    invalid_response_excerpt: str,
+    parsing_error: str,
+    schema_hint: dict,
+) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": RESUME_STRUCTURING_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                "Repair malformed CandidateProfile JSON syntax or structure only. Return exactly "
+                "one complete JSON object. Do not include prose or markdown fences.\n\n"
+                f"CandidateProfile JSON schema:\n{schema_hint}\n\n"
+                f"Parsing error:\n{parsing_error}\n\n"
                 f"Invalid response excerpt:\n{invalid_response_excerpt}"
             ),
         },
     ]
 
 
-def _safe_excerpt_from_failures(failures: list[dict]) -> str:
-    if not failures:
-        return "<none>"
-    error = failures[-1].get("error", "")
-    return error[:1000]
+def _attempt_failure(
+    *,
+    attempt: int,
+    max_attempts: int,
+    request_kind: str,
+    response_format: dict | None,
+    response_format_fallback_used: bool,
+    settings: Settings,
+    ocr_document: OcrDocument,
+    prompt_text: str,
+    error_type: str,
+    error: str,
+    metadata: dict,
+    elapsed_seconds: float,
+    json_parse_success: bool,
+    validation_success: bool,
+    validation_errors: list[dict],
+) -> dict:
+    repaired_paths = [item["path"] for item in validation_errors]
+    return {
+        "operation": "candidate_profile_structuring",
+        "request_kind": request_kind,
+        "attempt": attempt + 1,
+        "max_attempts": max_attempts,
+        "model_alias": settings.gemma_model,
+        "used_response_format": response_format is not None,
+        "response_format_requested": response_format is not None,
+        "response_format_fallback_used": response_format_fallback_used,
+        "enable_thinking_false_requested": True,
+        "requested_max_tokens": settings.gemma_resume_max_tokens,
+        "error_type": error_type,
+        "error": error,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "prompt_block_count": len(ocr_document.blocks),
+        "prompt_text_length": len(prompt_text),
+        "json_parse_success": json_parse_success,
+        "validation_success": validation_success,
+        "validation_error_count": len(validation_errors),
+        "repaired_field_paths": repaired_paths,
+        "truncation_classification": (
+            "final_response_truncated" if error_type == "FinalResponseTruncatedError" else None
+        ),
+        "response_metadata": metadata,
+    }
+
+
+def _concise_validation_errors(error: ValidationError) -> list[dict]:
+    output: list[dict] = []
+    for item in error.errors():
+        path = ".".join(str(part) for part in item.get("loc", ()))
+        record = {
+            "path": path,
+            "type": item.get("type"),
+            "message": item.get("msg"),
+        }
+        input_value = item.get("input")
+        if input_value is None or isinstance(input_value, (str, int, float, bool)):
+            record["input"] = input_value
+        else:
+            record["input_type"] = type(input_value).__name__
+        output.append(record)
+    return output
+
+
+def _classified_error_type(error: Exception) -> str:
+    if isinstance(error, EmptyModelResponseError):
+        return "EmptyModelResponseError"
+    if isinstance(error, FinalResponseTruncatedError):
+        return "FinalResponseTruncatedError"
+    if isinstance(error, ModelResponseError):
+        return "MalformedJSONError"
+    return type(error).__name__
+
+
+def _safe_error_message(error: Exception, error_type: str) -> str:
+    if error_type in {"MalformedJSONError", "EmptyModelResponseError", "FinalResponseTruncatedError"}:
+        return str(error)
+    return f"{error_type}: see safe metadata"
+
+
+def _safe_model_output_excerpt(text: str, limit: int = 1200) -> str:
+    return text[:limit]
 
 
 def _persist_resume_failure_debug(
@@ -247,10 +441,10 @@ def _mock_candidate_profile(ocr_document: OcrDocument, candidate_id: str) -> Can
         summary=all_text[:300],
         experience=[
             ExperienceEntry(
-                title="",
-                organization="",
-                industry_or_domain="",
-                employment_type="",
+                title=None,
+                organization=None,
+                industry_or_domain=None,
+                employment_type=None,
                 start_date="2021-01",
                 end_date="2025-01",
                 responsibilities=[block.normalized_text for block in ocr_document.blocks[:3]],

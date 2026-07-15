@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
-from chandra_eval.exceptions import ModelResponseError
+from chandra_eval.exceptions import EmptyModelResponseError, ModelResponseError
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ def extract_assistant_text(payload: dict[str, Any]) -> AssistantText:
             text = reasoning
 
     if not text.strip():
-        raise ModelResponseError(
+        raise EmptyModelResponseError(
             "LLM response contained empty assistant content; "
             f"metadata={json.dumps(metadata, sort_keys=True)}"
         )

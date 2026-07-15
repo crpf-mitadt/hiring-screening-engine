@@ -6,7 +6,7 @@ from typing import Any
 import requests
 
 from chandra_eval.config import Settings
-from chandra_eval.exceptions import ModelResponseError
+from chandra_eval.exceptions import APICompatibilityError, ModelResponseError
 from chandra_eval.llm.response import extract_assistant_text
 
 
@@ -30,6 +30,7 @@ class GemmaClient:
             "messages": messages,
             "temperature": 0,
             "max_tokens": max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         if response_format is not None:
             body["response_format"] = response_format
@@ -42,8 +43,18 @@ class GemmaClient:
                     json=body,
                     timeout=self.settings.llm_request_timeout_seconds,
                 )
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError as error:
+                    if response_format is not None and _is_response_format_compatibility_error(response):
+                        raise APICompatibilityError(
+                            f"Gemma API rejected response_format: HTTP {response.status_code}: "
+                            f"{response.text[:500]}"
+                        ) from error
+                    raise
                 return response.json()
+            except APICompatibilityError:
+                raise
             except Exception as error:
                 last_error = error
                 if attempt < self.settings.llm_max_retries:
@@ -53,3 +64,17 @@ class GemmaClient:
     def chat(self, messages: list[dict[str, str]], max_tokens: int = 4096) -> str:
         payload = self.chat_response(messages, max_tokens=max_tokens)
         return extract_assistant_text(payload).text
+
+
+def _is_response_format_compatibility_error(response: requests.Response) -> bool:
+    text = response.text.lower()
+    return any(
+        marker in text
+        for marker in (
+            "unknown parameter",
+            "unsupported response_format",
+            "unsupported json_schema",
+            "invalid response_format",
+            "response_format is not supported",
+        )
+    )

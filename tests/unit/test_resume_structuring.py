@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from chandra_eval.config import Settings
-from chandra_eval.exceptions import ModelResponseError
+from chandra_eval.exceptions import APICompatibilityError, ModelResponseError
 from chandra_eval.pipeline.resume_structuring import structure_resume_from_ocr
 
 
@@ -23,7 +23,10 @@ class FakeGemmaClient:
         )
         if not self.payloads:
             return {"choices": [{"message": {"content": ""}}]}
-        return self.payloads.pop(0)
+        payload = self.payloads.pop(0)
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
 
 
 def _message_payload(content, finish_reason="stop") -> dict:
@@ -122,7 +125,7 @@ class ResumeStructuringTests(unittest.TestCase):
                     mock_llm=True,
                 )
 
-    def test_empty_schema_response_retries_without_response_format(self) -> None:
+    def test_empty_schema_response_retries_with_response_format(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             raw = root / "raw.json"
@@ -165,7 +168,7 @@ class ResumeStructuringTests(unittest.TestCase):
 
             self.assertEqual(candidate.skills, ["Python"])
             self.assertIsNotNone(client.calls[0]["response_format"])
-            self.assertIsNone(client.calls[1]["response_format"])
+            self.assertIsNotNone(client.calls[1]["response_format"])
             self.assertEqual(client.calls[0]["max_tokens"], 8192)
 
     def test_repair_request_succeeds_after_invalid_json(self) -> None:
@@ -211,7 +214,111 @@ class ResumeStructuringTests(unittest.TestCase):
             )
 
             self.assertEqual(candidate.skills, ["Python"])
-            self.assertIn("Repair", client.calls[2]["messages"][1]["content"])
+            self.assertIn("malformed", client.calls[2]["messages"][1]["content"])
+            self.assertIsNotNone(client.calls[2]["response_format"])
+
+    def test_schema_validation_repair_preserves_existing_json_and_omits_ocr(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw.json"
+            raw.write_text(
+                json.dumps(
+                    [
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            invalid_payload = {
+                "candidate_id": "candidate-008",
+                "source_document_id": "raw.json",
+                "extraction_method": "live_gemma",
+                "summary": "Valid summary",
+                "skills": ["Python"],
+                "education": [{"degree_level": "not-a-degree"}],
+            }
+            repaired_payload = {
+                **invalid_payload,
+                "education": [{"degree_level": "unknown", "field_of_study": None}],
+            }
+            client = FakeGemmaClient(
+                [
+                    _message_payload(json.dumps(invalid_payload)),
+                    _message_payload(json.dumps(repaired_payload)),
+                ]
+            )
+
+            candidate = structure_resume_from_ocr(
+                raw,
+                candidate_id="candidate-008",
+                output_path=root / "candidate.json",
+                gemma_client=client,
+                settings=Settings(llm_max_retries=1),
+            )
+
+            repair_prompt = client.calls[1]["messages"][1]["content"]
+            self.assertEqual(candidate.summary, "Valid summary")
+            self.assertEqual(candidate.skills, ["Python"])
+            self.assertEqual(candidate.education[0].degree_level.value, "unknown")
+            self.assertIn("Existing JSON object", repair_prompt)
+            self.assertIn("education.0.degree_level", repair_prompt)
+            self.assertNotIn("OCR text with source references", repair_prompt)
+            self.assertNotIn("Skills: Python</p>", repair_prompt)
+            self.assertIsNotNone(client.calls[1]["response_format"])
+
+    def test_response_format_removed_only_for_api_compatibility_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw.json"
+            raw.write_text(
+                json.dumps(
+                    [
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "candidate_id": "candidate-009",
+                "source_document_id": "raw.json",
+                "extraction_method": "live_gemma",
+                "summary": "Python engineer",
+                "skills": ["Python"],
+            }
+            client = FakeGemmaClient(
+                [
+                    APICompatibilityError("unsupported response_format"),
+                    _message_payload(json.dumps(payload)),
+                ]
+            )
+
+            candidate = structure_resume_from_ocr(
+                raw,
+                candidate_id="candidate-009",
+                output_path=root / "candidate.json",
+                gemma_client=client,
+                settings=Settings(llm_max_retries=1),
+            )
+
+            self.assertEqual(candidate.skills, ["Python"])
+            self.assertIsNotNone(client.calls[0]["response_format"])
+            self.assertIsNone(client.calls[1]["response_format"])
 
     def test_retries_exhausted_writes_safe_metadata_not_raw_by_default(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -52,6 +52,41 @@ export GEMMA_MODEL=gemma4-12b
 export GEMMA_API_KEY=no-key
 ```
 
+Resume and JD structuring requests keep OpenAI-compatible `response_format={"type":"json_object"}`
+enabled by default and send `chat_template_kwargs={"enable_thinking":false}`. The code removes
+`response_format` only when the Gemma API explicitly rejects that request feature.
+
+Resume extraction preserves the OCR output directory as the reusable handoff between Chandra OCR
+and Gemma structuring. If structuring fails, rerun `scripts/structure_resume.py` against the existing
+OCR directory; another live OCR run is not required.
+
+The resume schema allows `null` for optional facts such as unknown degree fields, institutions,
+titles, organizations, domains, and employment type. Prompts instruct Gemma to use `null` rather
+than inventing values or writing empty strings. Required IDs, enum values, evidence shapes, and list
+item types still fail validation.
+
+When a Gemma response parses as JSON but fails Pydantic validation, the retry is a targeted repair:
+it sends the parsed JSON and concise validation paths back to Gemma, preserves unrelated fields, and
+does not resend OCR text. Empty assistant content is retried with `response_format` still enabled.
+`finish_reason=length` is reported as a truncation-specific failure instead of being folded into
+generic malformed JSON repair.
+
+`GEMMA_RESUME_MAX_TOKENS` defaults to `8192`. Keep that default unless a final response is proven to
+be truncated; the July 2026 live failure mode was nullable-field validation plus thinking/schema
+fallback behavior, not an 8192-token budget failure.
+
+Safe failure metadata is always written to `resume-structuring-error-metadata.json` beside the
+requested candidate output. It includes model, finish reason, usage, message keys, content and
+reasoning content types and lengths, response-format status, requested max tokens, elapsed seconds,
+validation paths, and retry classification. Private raw model content is written only when:
+
+```bash
+export PIPELINE_DEBUG_RAW_RESPONSES=true
+```
+
+With that opt-in, failed resume structuring also writes
+`structured-resume-gemma-response.json` in the same ignored output directory.
+
 Run the live pipeline:
 
 ```bash
