@@ -119,3 +119,47 @@ uv run python scripts/build_report.py outputs/live --json --csv --html
 ```
 
 Generated OCR and report outputs are private and remain under ignored `outputs/` paths.
+
+## Unified Match Command
+
+The preferred live workflow is:
+
+```bash
+uv run chandra-eval match
+```
+
+or directly:
+
+```bash
+uv run chandra-eval match \
+  --jd "inputs/jds/Job description - Marketing Coordinator.docx" \
+  --resume "inputs/resumes/Marketing/Maheshwari Thakur Resume Marketing.pdf" \
+  --candidate-id candidate-marketing-001 \
+  --job-id marketing-coordinator
+```
+
+The command performs service preflight, JD ingestion, resume OCR when needed, structuring,
+evaluation, report generation, run-summary generation, and a concise terminal summary. It reuses
+cached artifacts only when source content hashes and relevant model/prompt settings match.
+
+Use `--force` to regenerate all stages, `--no-cache` to disable reuse, `--list-jds` or
+`--list-resumes` to inspect configured input directories, and `--search` to filter list output.
+
+Output layout:
+
+```text
+outputs/matches/<job-id>/<candidate-id>/<timestamp>/
+  run-manifest.json
+  run-summary.json
+  run-summary.md
+  structured-jd.json
+  structured-resume.json
+  evaluation.json
+  evaluation.csv
+  evaluation.html
+  ocr/
+```
+
+The terminal and summary outputs do not include raw prompts, raw model responses, email addresses,
+phone numbers, or home addresses. They retain the decision-support disclaimer and
+`human_review_required=true`.

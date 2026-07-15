@@ -58,3 +58,13 @@ python scripts/build_report.py outputs/live --json --csv --html
 - `document.json`
 - `source-map.json`
 - `metadata.json`
+
+The primary end-to-end command is:
+
+```bash
+uv run chandra-eval match
+```
+
+It discovers configured JD/resume inputs interactively or accepts `--jd` and `--resume` for
+automation. Each run writes a unique match directory containing structured artifacts, reports, and
+both JSON and Markdown summaries for later comparison.

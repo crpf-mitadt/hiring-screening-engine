@@ -107,3 +107,37 @@ The local Mac workflow does not require live Chandra or Gemma services:
 The pilot writes JSON, CSV, and HTML reports and always preserves `human_review_required=true`.
 
 Live structuring commands use Gemma by default. Use `--mock-llm` only for offline tests and synthetic demos.
+
+## End-to-end matching command
+
+Quick start:
+
+    uv sync --frozen
+    source .venv/bin/activate
+    uv run chandra-eval match
+
+When run without `--jd` and `--resume`, the command checks configured services, lists supported
+JD files from `JD_INPUT_DIR`, then lists supported resumes from `RESUME_INPUT_DIR`. Menus use
+numbered selection plus `S` for search, `B` for back where applicable, and `Q` for clean
+cancellation.
+
+Non-interactive usage:
+
+    uv run chandra-eval match \
+      --jd "inputs/jds/Job description - Marketing Coordinator.docx" \
+      --resume "inputs/resumes/Marketing/example.pdf" \
+      --candidate-id candidate-marketing-001 \
+      --job-id marketing-coordinator
+
+The fallback script form is:
+
+    uv run python scripts/match_resume_to_jd.py --jd "inputs/jds/job.docx" --resume "inputs/resumes/resume.pdf"
+
+Each run creates a unique directory under `MATCH_OUTPUT_ROOT`, for example
+`outputs/matches/marketing-coordinator/candidate-abc123/20260715-170500/`. The directory contains
+structured JD/resume JSON, evaluation JSON/CSV/HTML, `run-manifest.json`, `run-summary.json`, and
+`run-summary.md`.
+
+Artifact reuse is based on source content hashes plus relevant model/prompt configuration. `--force`
+regenerates stages, and `--no-cache` disables cache reads and writes. Reports are decision support
+only; a qualified human reviewer must review the evidence before any employment decision.

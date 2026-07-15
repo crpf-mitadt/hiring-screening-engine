@@ -18,6 +18,9 @@ dependencies = [
     "requests==2.34.2",
 ]
 
+[project.scripts]
+chandra-eval = "chandra_eval.cli:main"
+
 [build-system]
 requires = ["hatchling==1.28.0"]
 build-backend = "hatchling.build"

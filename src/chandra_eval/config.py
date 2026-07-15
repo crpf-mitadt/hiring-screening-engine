@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, ge=0, le=10)
     gemma_resume_max_tokens: int = Field(default=8192, ge=512)
     pipeline_output_dir: Path = Path("outputs")
+    resume_input_dir: Path = Path("inputs/resumes")
+    jd_input_dir: Path = Path("inputs/jds")
+    match_output_root: Path = Path("outputs/matches")
     pipeline_debug_raw_responses: bool = False
 
     model_config = SettingsConfigDict(

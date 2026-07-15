@@ -10,8 +10,12 @@ from chandra_eval.schemas.common import EvidenceRef, StrictBaseModel
 
 class CriterionStatus(str, Enum):
     MET = "met"
+    PARTIALLY_MET = "partially_met"
     PARTIAL = "partial"
     NOT_MET = "not_met"
+    NOT_FOUND = "not_found"
+    UNCLEAR = "unclear"
+    NOT_APPLICABLE = "not_applicable"
     AMBIGUOUS = "ambiguous"
 
 
@@ -38,6 +42,7 @@ class EligibilityResult(StrictBaseModel):
     checked_requirements: list[str] = Field(default_factory=list)
     failed_requirements: list[str] = Field(default_factory=list)
     ambiguous_requirements: list[str] = Field(default_factory=list)
+    requirement_statuses: dict[str, str] = Field(default_factory=dict)
     explanation: str
 
 
@@ -51,6 +56,7 @@ class CandidateEvaluationReport(StrictBaseModel):
     final_score: float
     maximum_score: float = 100.0
     evidence_completeness: float = Field(ge=0, le=1)
+    experience_summary: dict[str, Any] = Field(default_factory=dict)
     strengths: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)

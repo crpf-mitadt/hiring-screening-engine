@@ -4,11 +4,14 @@ import re
 
 
 def normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value.strip().lower())
+    return re.sub(r"\s+", " ", value.strip().lower().replace("&", " and "))
 
 
 def normalize_token(value: str) -> str:
-    return re.sub(r"[^a-z0-9+#.]+", " ", value.lower()).strip()
+    text = value.lower().replace("&", " and ")
+    text = re.sub(r"[^a-z0-9+#.]+", " ", text)
+    words = [word[:-1] if len(word) > 3 and word.endswith("s") else word for word in text.split()]
+    return " ".join(words)
 
 
 def contains_equivalent(haystack: list[str], needle: str, equivalents: list[str] | None = None) -> bool:

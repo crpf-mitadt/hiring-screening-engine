@@ -13,6 +13,7 @@ class CliHelpTests(unittest.TestCase):
             "scripts/structure_resume.py",
             "scripts/evaluate_candidate.py",
             "scripts/build_report.py",
+            "scripts/match_resume_to_jd.py",
         ]
         for script in scripts:
             with self.subTest(script=script):
@@ -24,6 +25,16 @@ class CliHelpTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("usage:", result.stdout)
+
+    def test_chandra_eval_match_help(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "chandra_eval.cli", "match", "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage:", result.stdout)
 
 
 if __name__ == "__main__":
