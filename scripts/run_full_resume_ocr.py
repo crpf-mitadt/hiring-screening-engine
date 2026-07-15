@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
-import json
 from pathlib import Path
 
 from chandra_eval.config import load_settings
 from chandra_eval.ocr.chandra_client import ChandraClient
-from chandra_eval.ocr.full_document import ocr_pdf_pages
+from chandra_eval.ocr.full_document import ocr_pdf_pages, write_ocr_artifacts
 
 
 def main() -> None:
@@ -21,9 +20,15 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     client = ChandraClient(settings)
     responses = ocr_pdf_pages(args.pdf, client, page_count=args.pages, max_tokens=args.max_tokens)
-    output_path = args.output / f"{args.pdf.stem}-responses.json"
-    output_path.write_text(json.dumps(responses, indent=2), encoding="utf-8")
-    print(f"OCR responses: {output_path}")
+    metadata = write_ocr_artifacts(
+        responses=responses,
+        output_dir=args.output,
+        source_pdf=str(args.pdf),
+        model=settings.chandra_model,
+    )
+    print(f"OCR artifacts: {args.output}")
+    print(f"Raw responses: {args.output / 'raw-responses.json'}")
+    print(f"Pages: {metadata['page_count']}")
 
 
 if __name__ == "__main__":

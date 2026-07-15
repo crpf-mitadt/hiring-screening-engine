@@ -14,6 +14,22 @@ class ChandraHtmlTests(unittest.TestCase):
         self.assertEqual(python_block.normalized_text, "Python")
         self.assertEqual(python_block.bbox, [0.1, 0.2, 0.8, 0.25])
 
+    def test_tables_are_preserved_and_image_blocks_are_excluded(self) -> None:
+        html = """
+        <div data-label="Image" data-bbox="[0,0,1,1]">portrait</div>
+        <table>
+          <tr>
+            <td data-label="Table" data-bbox="[0.1,0.1,0.2,0.2]">Python</td>
+          </tr>
+        </table>
+        """
+
+        blocks = parse_chandra_html(html)
+
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].label, "Table")
+        self.assertEqual(blocks[0].text, "Python")
+
 
 if __name__ == "__main__":
     unittest.main()

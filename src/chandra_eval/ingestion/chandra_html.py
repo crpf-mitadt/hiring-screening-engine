@@ -44,12 +44,13 @@ def parse_chandra_html(html: str) -> list[ChandraBlock]:
 
     blocks: list[ChandraBlock] = []
     for index, element in enumerate(elements):
-        label = (
-            element.get("data-label")
-            or element.get("class", ["Text"])[0]
-            if element.get("class")
-            else "Text"
-        )
+        label = element.get("data-label")
+        if not label and element.get("class"):
+            label = element.get("class", ["Text"])[0]
+        if not label:
+            label = "Text"
+        if str(label).lower() == "image":
+            continue
         text = element.get_text(" ", strip=True)
         if not text:
             continue
