@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     gemma_api_key: str = Field(default="no-key", min_length=1)
     llm_request_timeout_seconds: int = Field(default=900, ge=1)
     llm_max_retries: int = Field(default=2, ge=0, le=10)
+    gemma_resume_max_tokens: int = Field(default=8192, ge=512)
     pipeline_output_dir: Path = Path("outputs")
     pipeline_debug_raw_responses: bool = False
 

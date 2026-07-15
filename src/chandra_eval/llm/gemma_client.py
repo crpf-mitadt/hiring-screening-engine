@@ -7,13 +7,19 @@ import requests
 
 from chandra_eval.config import Settings
 from chandra_eval.exceptions import ModelResponseError
+from chandra_eval.llm.response import extract_assistant_text
 
 
 class GemmaClient:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    def chat(self, messages: list[dict[str, str]], max_tokens: int = 4096) -> str:
+    def chat_response(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 4096,
+        response_format: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         url = str(self.settings.gemma_base_url).rstrip("/") + "/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.settings.gemma_api_key}",
@@ -25,6 +31,8 @@ class GemmaClient:
             "temperature": 0,
             "max_tokens": max_tokens,
         }
+        if response_format is not None:
+            body["response_format"] = response_format
         last_error: Exception | None = None
         for attempt in range(self.settings.llm_max_retries + 1):
             try:
@@ -35,22 +43,13 @@ class GemmaClient:
                     timeout=self.settings.llm_request_timeout_seconds,
                 )
                 response.raise_for_status()
-                payload = response.json()
-                return _extract_content(payload)
+                return response.json()
             except Exception as error:
                 last_error = error
                 if attempt < self.settings.llm_max_retries:
                     time.sleep(0.5 * (attempt + 1))
         raise ModelResponseError(f"Gemma request failed: {last_error}") from last_error
 
-
-def _extract_content(payload: dict[str, Any]) -> str:
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as error:
-        raise ModelResponseError("Gemma response did not contain message content") from error
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
-    return str(content)
+    def chat(self, messages: list[dict[str, str]], max_tokens: int = 4096) -> str:
+        payload = self.chat_response(messages, max_tokens=max_tokens)
+        return extract_assistant_text(payload).text

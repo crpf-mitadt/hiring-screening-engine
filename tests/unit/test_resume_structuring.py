@@ -3,16 +3,35 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from chandra_eval.config import Settings
+from chandra_eval.exceptions import ModelResponseError
 from chandra_eval.pipeline.resume_structuring import structure_resume_from_ocr
 
 
 class FakeGemmaClient:
-    def __init__(self, content: str):
-        self.content = content
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = []
 
-    def chat(self, messages, max_tokens=4096):
-        self.messages = messages
-        return self.content
+    def chat_response(self, messages, max_tokens=4096, response_format=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "response_format": response_format,
+            }
+        )
+        if not self.payloads:
+            return {"choices": [{"message": {"content": ""}}]}
+        return self.payloads.pop(0)
+
+
+def _message_payload(content, finish_reason="stop") -> dict:
+    return {
+        "model": "gemma4-12b",
+        "choices": [{"finish_reason": finish_reason, "message": {"content": content}}],
+        "usage": {"completion_tokens": 10},
+    }
 
 
 class ResumeStructuringTests(unittest.TestCase):
@@ -81,7 +100,9 @@ class ResumeStructuringTests(unittest.TestCase):
                 raw,
                 candidate_id="candidate-002",
                 output_path=root / "candidate.json",
-                gemma_client=FakeGemmaClient("Result:\n" + json.dumps(payload) + "\nDone"),
+                gemma_client=FakeGemmaClient(
+                    [_message_payload("Result:\n" + json.dumps(payload) + "\nDone")]
+                ),
             )
 
             self.assertEqual(candidate.candidate_id, "candidate-002")
@@ -100,6 +121,166 @@ class ResumeStructuringTests(unittest.TestCase):
                     output_path=root / "candidate.json",
                     mock_llm=True,
                 )
+
+    def test_empty_schema_response_retries_without_response_format(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw.json"
+            raw.write_text(
+                json.dumps(
+                    [
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "candidate_id": "candidate-004",
+                "source_document_id": "raw.json",
+                "extraction_method": "live_gemma",
+                "summary": "Python engineer",
+                "skills": ["Python"],
+            }
+            client = FakeGemmaClient(
+                [
+                    _message_payload(""),
+                    _message_payload(json.dumps(payload)),
+                ]
+            )
+            candidate = structure_resume_from_ocr(
+                raw,
+                candidate_id="candidate-004",
+                output_path=root / "candidate.json",
+                gemma_client=client,
+                settings=Settings(llm_max_retries=2, gemma_resume_max_tokens=8192),
+            )
+
+            self.assertEqual(candidate.skills, ["Python"])
+            self.assertIsNotNone(client.calls[0]["response_format"])
+            self.assertIsNone(client.calls[1]["response_format"])
+            self.assertEqual(client.calls[0]["max_tokens"], 8192)
+
+    def test_repair_request_succeeds_after_invalid_json(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw.json"
+            raw.write_text(
+                json.dumps(
+                    [
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "candidate_id": "candidate-005",
+                "source_document_id": "raw.json",
+                "extraction_method": "live_gemma",
+                "summary": "Python engineer",
+                "skills": ["Python"],
+            }
+            client = FakeGemmaClient(
+                [
+                    _message_payload("{bad"),
+                    _message_payload("{bad"),
+                    _message_payload(json.dumps(payload)),
+                ]
+            )
+            candidate = structure_resume_from_ocr(
+                raw,
+                candidate_id="candidate-005",
+                output_path=root / "candidate.json",
+                gemma_client=client,
+                settings=Settings(llm_max_retries=2),
+            )
+
+            self.assertEqual(candidate.skills, ["Python"])
+            self.assertIn("Repair", client.calls[2]["messages"][1]["content"])
+
+    def test_retries_exhausted_writes_safe_metadata_not_raw_by_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw.json"
+            output = root / "candidate.json"
+            raw.write_text(
+                json.dumps(
+                    [
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            client = FakeGemmaClient([_message_payload("")])
+
+            with self.assertRaises(ModelResponseError):
+                structure_resume_from_ocr(
+                    raw,
+                    candidate_id="candidate-006",
+                    output_path=output,
+                    gemma_client=client,
+                    settings=Settings(llm_max_retries=0, pipeline_debug_raw_responses=False),
+                )
+
+            self.assertTrue((root / "resume-structuring-error-metadata.json").is_file())
+            self.assertFalse((root / "resume-structuring-raw-responses.json").exists())
+
+    def test_raw_response_written_only_when_debug_enabled_and_length_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / "raw.json"
+            output = root / "candidate.json"
+            raw.write_text(
+                json.dumps(
+                    [
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            client = FakeGemmaClient([_message_payload('{"candidate_id": "x"}', finish_reason="length")])
+
+            with self.assertRaises(ModelResponseError):
+                structure_resume_from_ocr(
+                    raw,
+                    candidate_id="candidate-007",
+                    output_path=output,
+                    gemma_client=client,
+                    settings=Settings(llm_max_retries=0, pipeline_debug_raw_responses=True),
+                )
+
+            self.assertTrue((root / "resume-structuring-raw-responses.json").is_file())
 
 
 if __name__ == "__main__":
