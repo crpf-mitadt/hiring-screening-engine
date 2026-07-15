@@ -105,3 +105,5 @@ The local Mac workflow does not require live Chandra or Gemma services:
     uv run python scripts/run_matching_pilot.py
 
 The pilot writes JSON, CSV, and HTML reports and always preserves `human_review_required=true`.
+
+Live structuring commands use Gemma by default. Use `--mock-llm` only for offline tests and synthetic demos.
