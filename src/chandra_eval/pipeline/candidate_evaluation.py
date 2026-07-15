@@ -14,14 +14,20 @@ from chandra_eval.schemas.evaluation import CandidateEvaluationReport
 def evaluate_candidate_files(
     candidate_path: Path,
     jd_path: Path,
-    output_dir: Path,
+    output: Path,
 ) -> CandidateEvaluationReport:
     candidate = load_candidate_profile(candidate_path)
     jd = load_structured_jd(jd_path)
     if candidate.scoring_safe_profile is None:
         raise RuntimeError("Candidate profile did not produce a scoring-safe profile")
     report = evaluate_candidate(candidate.scoring_safe_profile, jd)
-    write_json_report(report, output_dir / "evaluation.json")
+    if output.suffix.lower() == ".json":
+        json_path = output
+        output_dir = output.parent
+    else:
+        output_dir = output
+        json_path = output_dir / "evaluation.json"
+    write_json_report(report, json_path)
     write_csv_report(report, output_dir / "evaluation.csv")
     write_html_report(report, output_dir / "evaluation.html")
     return report

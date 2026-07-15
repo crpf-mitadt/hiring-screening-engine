@@ -10,18 +10,32 @@ from chandra_eval.schemas.evaluation import CandidateEvaluationReport
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build JSON, CSV, and HTML reports from evaluation JSON.")
-    parser.add_argument("evaluation_json", type=Path)
-    parser.add_argument("--output", type=Path, default=Path("outputs/report"))
+    parser = argparse.ArgumentParser(
+        description="Build selected JSON, CSV, and HTML reports from evaluation JSON or a pipeline directory."
+    )
+    parser.add_argument("input", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--json", action="store_true", help="Write JSON report.")
+    parser.add_argument("--csv", action="store_true", help="Write CSV report.")
+    parser.add_argument("--html", action="store_true", help="Write HTML report.")
     args = parser.parse_args()
 
+    evaluation_json = args.input / "evaluation.json" if args.input.is_dir() else args.input
     report = CandidateEvaluationReport.model_validate_json(
-        args.evaluation_json.read_text(encoding="utf-8")
+        evaluation_json.read_text(encoding="utf-8")
     )
-    write_json_report(report, args.output / "evaluation.json")
-    write_csv_report(report, args.output / "evaluation.csv")
-    write_html_report(report, args.output / "evaluation.html")
-    print(f"Reports: {args.output}")
+    output = args.output or (args.input if args.input.is_dir() else evaluation_json.parent)
+    selected = args.json or args.csv or args.html
+    write_json = args.json or not selected
+    write_csv = args.csv or not selected
+    write_html = args.html or not selected
+    if write_json:
+        write_json_report(report, output / "evaluation.json")
+    if write_csv:
+        write_csv_report(report, output / "evaluation.csv")
+    if write_html:
+        write_html_report(report, output / "evaluation.html")
+    print(f"Reports: {output}")
 
 
 if __name__ == "__main__":

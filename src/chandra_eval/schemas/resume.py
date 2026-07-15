@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 from chandra_eval.schemas.common import (
     DatePrecision,
     EvidenceRef,
+    ExtractionMethod,
     StrictBaseModel,
 )
 
@@ -85,6 +86,7 @@ class ScoringSafeProfile(StrictBaseModel):
 class CandidateProfile(StrictBaseModel):
     candidate_id: str
     source_document_id: str
+    extraction_method: ExtractionMethod = ExtractionMethod.DETERMINISTIC_FALLBACK
     summary: str = ""
     education: list[EducationEntry] = Field(default_factory=list)
     experience: list[ExperienceEntry] = Field(default_factory=list)
