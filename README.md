@@ -141,3 +141,11 @@ structured JD/resume JSON, evaluation JSON/CSV/HTML, `run-manifest.json`, `run-s
 Artifact reuse is based on source content hashes plus relevant model/prompt configuration. `--force`
 regenerates stages, and `--no-cache` disables cache reads and writes. Reports are decision support
 only; a qualified human reviewer must review the evidence before any employment decision.
+
+Raw resume PDFs are OCR'd as full documents by default. `--ocr-pages` is an explicit page cap, not
+the default. Partial OCR fails before scoring unless `--allow-partial-evaluation` is passed; allowed
+partial runs force eligibility `REVIEW`, reduce evidence completeness, and add prominent warnings.
+
+Private raw Chandra and Gemma model responses are not persisted unless
+`PIPELINE_DEBUG_RAW_RESPONSES=true`. Normalized OCR HTML, metadata, document JSON, and source maps
+remain available for audit.

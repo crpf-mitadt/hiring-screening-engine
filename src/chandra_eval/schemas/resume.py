@@ -1,6 +1,7 @@
 """Candidate profile schemas."""
 
 from enum import Enum
+import re
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -35,6 +36,66 @@ class CompletionStatus(str, Enum):
 
 def _none_to_list(value):
     return [] if value is None else value
+
+
+_MONTH_NAMES = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+
+def _normalize_resume_date(value: Any) -> tuple[str | None, DatePrecision, bool]:
+    if value is None:
+        return None, DatePrecision.UNKNOWN, False
+    text = str(value).strip()
+    if not text:
+        return None, DatePrecision.UNKNOWN, False
+    lowered = text.lower().strip(".")
+    if lowered in {"present", "current", "now"}:
+        return None, DatePrecision.UNKNOWN, True
+    match = re.fullmatch(r"(\d{4})(?:[-/](\d{1,2}))?", text)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2) or "1")
+        if not 1 <= month <= 12:
+            return text, DatePrecision.UNKNOWN, False
+        if match.group(2):
+            return f"{year:04d}-{month:02d}", DatePrecision.MONTH, False
+        return f"{year:04d}", DatePrecision.YEAR, False
+    match = re.fullmatch(r"(\d{1,2})[-/](\d{4})", text)
+    if match:
+        month = int(match.group(1))
+        year = int(match.group(2))
+        if 1 <= month <= 12:
+            return f"{year:04d}-{month:02d}", DatePrecision.MONTH, False
+    match = re.fullmatch(r"([A-Za-z]+)\s+(\d{4})", text)
+    if match:
+        month = _MONTH_NAMES.get(match.group(1).lower())
+        if month is not None:
+            return f"{int(match.group(2)):04d}-{month:02d}", DatePrecision.MONTH, False
+    return text, DatePrecision.UNKNOWN, False
 
 
 class EducationEntry(StrictBaseModel):
@@ -83,6 +144,25 @@ class ExperienceEntry(StrictBaseModel):
     @classmethod
     def _collections_default_empty(cls, value):
         return _none_to_list(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_dates(cls, values):
+        if not isinstance(values, dict):
+            return values
+        output = dict(values)
+        start, start_precision, _ = _normalize_resume_date(output.get("start_date"))
+        end, end_precision, active = _normalize_resume_date(output.get("end_date"))
+        output["start_date"] = start
+        output["end_date"] = end
+        if output.get("start_date_precision") in {None, "", DatePrecision.UNKNOWN, "unknown"}:
+            output["start_date_precision"] = start_precision
+        if active:
+            output["currently_active"] = True
+            output["end_date_precision"] = DatePrecision.UNKNOWN
+        elif output.get("end_date_precision") in {None, "", DatePrecision.UNKNOWN, "unknown"}:
+            output["end_date_precision"] = end_precision
+        return output
 
 
 class ScoringSafeProfile(StrictBaseModel):

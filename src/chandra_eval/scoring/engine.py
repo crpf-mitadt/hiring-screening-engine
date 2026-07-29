@@ -20,6 +20,21 @@ from chandra_eval.schemas.jd import RequirementCategory, ScoringCriterion, Struc
 from chandra_eval.schemas.resume import ScoringSafeProfile
 
 
+APPROVED_FRACTIONS = (0.0, 0.25, 0.5, 0.75, 1.0)
+
+
+def discrete_match_fraction(value: float) -> float:
+    if value <= 0:
+        return 0.0
+    if value < 0.375:
+        return 0.25
+    if value < 0.625:
+        return 0.5
+    if value < 0.875:
+        return 0.75
+    return 1.0
+
+
 def _status(fraction: float, *, has_terms: bool, ambiguous: bool = False) -> CriterionStatus:
     if not has_terms:
         return CriterionStatus.NOT_APPLICABLE
@@ -44,6 +59,7 @@ def _score_criterion(
     fraction = 0.0
     explanation = ""
     index = build_candidate_evidence_index(candidate)
+    verification_needed = list(criterion.accepted_evidence)
 
     if criterion.category == RequirementCategory.EXPERIENCE:
         required_months = jd.minimum_experience_months or _minimum_from_requirements(jd)
@@ -59,25 +75,29 @@ def _score_criterion(
         else:
             terms = criterion_terms(criterion, jd)
             match = match_terms(terms, index)
-            fraction = match.fraction
+            fraction = discrete_match_fraction(match.fraction)
             missing = match.missing_terms
             evidence = match.evidence
             explanation = _match_explanation(match.matches, missing, ambiguity)
             return CriterionEvaluation(
                 criterion_id=criterion.criterion_id,
-                match_fraction=round(fraction, 3),
-                weighted_score=round(criterion.weight * fraction, 3),
+                match_fraction=fraction,
+                weighted_score=round(criterion.weight * fraction, 6),
                 status=_status(fraction, has_terms=bool(terms), ambiguous=bool(ambiguity)),
                 explanation=explanation,
                 evidence=evidence,
                 missing_information=missing,
                 ambiguity=ambiguity,
+                verification_needed=verification_needed,
+                candidate_requirement=criterion.description,
+                evidence_found=_evidence_found(evidence),
             )
         terms = criterion_terms(criterion, jd)
         semantic = match_terms(terms, index)
         evidence = semantic.evidence
         if semantic.fraction > 0 and fraction < 1.0:
             fraction = max(fraction, min(semantic.fraction, 0.75))
+        fraction = discrete_match_fraction(fraction)
         missing.extend(term for term in semantic.missing_terms if term not in missing)
         explanation = (
             f"Confirmed {actual_months} months against {required_months or 0} required months. "
@@ -85,18 +105,22 @@ def _score_criterion(
         )
         return CriterionEvaluation(
             criterion_id=criterion.criterion_id,
-            match_fraction=round(fraction, 3),
-            weighted_score=round(criterion.weight * fraction, 3),
+            match_fraction=fraction,
+            weighted_score=round(criterion.weight * fraction, 6),
             status=_status(fraction, has_terms=True, ambiguous=bool(ambiguity)),
             explanation=explanation,
             evidence=evidence,
             missing_information=missing,
             ambiguity=ambiguity,
+            verification_needed=verification_needed,
+            candidate_requirement=criterion.description,
+            evidence_found=_evidence_found(evidence),
         )
 
     terms = criterion_terms(criterion, jd)
-    match = match_terms(terms, index)
-    fraction = match.fraction
+    allowed_sources = {"education"} if criterion.category == RequirementCategory.EDUCATION else None
+    match = match_terms(terms, index, allowed_sources=allowed_sources)
+    fraction = discrete_match_fraction(match.fraction)
     missing = match.missing_terms
     ambiguity = list(match.ambiguity)
     if criterion.category == RequirementCategory.EDUCATION and fraction > 0 and missing:
@@ -105,13 +129,16 @@ def _score_criterion(
 
     return CriterionEvaluation(
         criterion_id=criterion.criterion_id,
-        match_fraction=round(fraction, 3),
-        weighted_score=round(criterion.weight * fraction, 3),
+        match_fraction=fraction,
+        weighted_score=round(criterion.weight * fraction, 6),
         status=_status(fraction, has_terms=bool(terms), ambiguous=bool(ambiguity)),
         explanation=explanation,
         evidence=match.evidence,
         missing_information=missing,
         ambiguity=ambiguity,
+        verification_needed=verification_needed,
+        candidate_requirement=criterion.description,
+        evidence_found=_evidence_found(match.evidence),
     )
 
 
@@ -180,7 +207,10 @@ def evaluate_candidate(
         criterion_evaluations=evaluations,
         score_before_gates=round(raw_score, 3),
         final_score=final_score,
-        evidence_completeness=evidence_completeness(evaluations),
+        evidence_completeness=evidence_completeness(
+            evaluations,
+            date_warnings=experience_summary.get("date_warnings", []),
+        ),
         experience_summary=experience_summary,
         strengths=strengths,
         gaps=gaps,
@@ -212,3 +242,15 @@ def _match_explanation(matches, missing: list[str], ambiguity: list[str]) -> str
     if ambiguity:
         parts.append(f"Ambiguity: {', '.join(ambiguity[:4])}.")
     return " ".join(parts)
+
+
+def _evidence_found(evidence) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in evidence:
+        text = (item.normalized_text or item.exact_text).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text[:160])
+    return output

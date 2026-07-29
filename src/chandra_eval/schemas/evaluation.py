@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from chandra_eval.schemas.common import EvidenceRef, StrictBaseModel
 
@@ -34,7 +34,19 @@ class CriterionEvaluation(StrictBaseModel):
     evidence: list[EvidenceRef] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     ambiguity: list[str] = Field(default_factory=list)
+    verification_needed: list[str] = Field(default_factory=list)
+    candidate_requirement: str = ""
+    evidence_found: list[str] = Field(default_factory=list)
     model_assessment: dict[str, Any] | None = None
+
+    @field_validator("match_fraction")
+    @classmethod
+    def _approved_fraction(cls, value: float) -> float:
+        approved = {0.0, 0.25, 0.5, 0.75, 1.0}
+        rounded = round(float(value), 3)
+        if rounded not in approved:
+            raise ValueError("match_fraction must be one of 0.00, 0.25, 0.50, 0.75, 1.00")
+        return rounded
 
 
 class EligibilityResult(StrictBaseModel):
@@ -43,6 +55,7 @@ class EligibilityResult(StrictBaseModel):
     failed_requirements: list[str] = Field(default_factory=list)
     ambiguous_requirements: list[str] = Field(default_factory=list)
     requirement_statuses: dict[str, str] = Field(default_factory=dict)
+    requirement_details: list[dict[str, Any]] = Field(default_factory=list)
     explanation: str
 
 
@@ -50,6 +63,9 @@ class CandidateEvaluationReport(StrictBaseModel):
     evaluation_id: str
     candidate_id: str
     job_id: str
+    scoring_version: str = "scoring-v2-evidence-discrete"
+    warnings: list[str] = Field(default_factory=list)
+    mock_evaluation: bool = False
     eligibility: EligibilityResult
     criterion_evaluations: list[CriterionEvaluation]
     score_before_gates: float

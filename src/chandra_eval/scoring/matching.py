@@ -121,22 +121,23 @@ def criterion_terms(criterion: ScoringCriterion, jd: StructuredJD) -> list[str]:
         [
             criterion.name,
             criterion.description,
-            criterion.category.value,
             criterion.scoring_guidance,
-            *criterion.accepted_evidence,
+            *criterion.evaluation_dimensions,
         ]
     )
-    terms = list(criterion.accepted_evidence)
-    relevant_required = [
+    terms: list[str] = []
+    relevant_required = list(criterion.required_skill_names) or [
         skill for skill in jd.required_skills if _phrase_relevant(skill, seed_text)
     ]
-    relevant_preferred = [
+    relevant_preferred = list(criterion.preferred_skill_names) or [
         skill for skill in jd.preferred_skills if _phrase_relevant(skill, seed_text)
     ]
+    linked_requirement_ids = set(criterion.requirement_ids)
     relevant_requirements = [
         requirement.description
         for requirement in [*jd.mandatory_requirements, *jd.preferred_requirements]
-        if requirement.category == criterion.category or _phrase_relevant(requirement.description, seed_text)
+        if requirement.requirement_id in linked_requirement_ids
+        or (not linked_requirement_ids and _phrase_relevant(requirement.description, seed_text))
     ]
     terms.extend(relevant_requirements)
     terms.extend(relevant_required)
@@ -153,12 +154,17 @@ def criterion_terms(criterion: ScoringCriterion, jd: StructuredJD) -> list[str]:
     return _dedupe_terms(terms)
 
 
-def match_terms(terms: list[str], index: list[EvidenceText]) -> MatchResult:
+def match_terms(
+    terms: list[str],
+    index: list[EvidenceText],
+    *,
+    allowed_sources: set[str] | None = None,
+) -> MatchResult:
     matches: list[TermMatch] = []
     all_evidence: list[EvidenceRef] = []
     missing: list[str] = []
     for term in _dedupe_terms(terms):
-        term_match = _match_term(term, index)
+        term_match = _match_term(term, index, allowed_sources=allowed_sources)
         if term_match.matched:
             all_evidence.extend(term_match.evidence)
         else:
@@ -172,9 +178,15 @@ def match_terms(terms: list[str], index: list[EvidenceText]) -> MatchResult:
     )
 
 
-def match_requirement(description: str, index: list[EvidenceText], equivalents: list[str] | None = None) -> MatchResult:
+def match_requirement(
+    description: str,
+    index: list[EvidenceText],
+    equivalents: list[str] | None = None,
+    *,
+    allowed_sources: set[str] | None = None,
+) -> MatchResult:
     terms = _dedupe_terms([description, *(equivalents or []), *_important_phrases(description)])
-    return match_terms(terms[: max(1, len(terms))], index)
+    return match_terms(terms[: max(1, len(terms))], index, allowed_sources=allowed_sources)
 
 
 def _append_education(items: list[EvidenceText], education: EducationEntry, evidence: list[EvidenceRef]) -> None:
@@ -213,25 +225,38 @@ def _append(items: list[EvidenceText], value: str | None, evidence: list[Evidenc
     items.append(EvidenceText(text=text, normalized=normalize_token(text), evidence=evidence, source=source))
 
 
-def _match_term(term: str, index: list[EvidenceText]) -> TermMatch:
+def _match_term(term: str, index: list[EvidenceText], *, allowed_sources: set[str] | None = None) -> TermMatch:
     normalized = normalize_token(term)
     options = _term_options(normalized)
+    fallback_match: TermMatch | None = None
     for item in index:
+        if allowed_sources is not None and item.source not in allowed_sources:
+            continue
         for option in options:
             if _contains_phrase(item.normalized, option):
-                return TermMatch(
+                match = TermMatch(
                     term=term,
                     matched=True,
                     evidence=_mark_evidence(item.evidence, f"Matched '{term}' via '{option}'"),
                     reason=f"matched '{option}' in {item.source}: {item.text}",
                 )
-    semantic = _semantic_match(normalized, index)
+                if match.evidence:
+                    return match
+                fallback_match = fallback_match or match
+    if fallback_match is not None:
+        return fallback_match
+    semantic = _semantic_match(normalized, index, allowed_sources=allowed_sources)
     if semantic is not None:
         return TermMatch(term=term, matched=True, evidence=semantic[0], reason=semantic[1])
     return TermMatch(term=term, matched=False)
 
 
-def _semantic_match(normalized: str, index: list[EvidenceText]) -> tuple[list[EvidenceRef], str] | None:
+def _semantic_match(
+    normalized: str,
+    index: list[EvidenceText],
+    *,
+    allowed_sources: set[str] | None = None,
+) -> tuple[list[EvidenceRef], str] | None:
     patterns: list[tuple[set[str], str]] = []
     if any(token in normalized for token in ("crm", "pipeline", "database")):
         patterns.append(({"lead", "database"}, "responsibility supports CRM through lead database work"))
@@ -252,11 +277,20 @@ def _semantic_match(normalized: str, index: list[EvidenceText]) -> tuple[list[Ev
         patterns.append(({"master"}, "master degree evidence supports postgraduate education"))
         patterns.append(({"bachelor"}, "bachelor degree evidence supports graduate education"))
     for item in index:
+        if allowed_sources is not None and item.source not in allowed_sources:
+            continue
         words = set(item.normalized.split())
         for required, reason in patterns:
+            if _is_education_reason(reason) and item.source != "education":
+                continue
             if required.issubset(words):
                 return _mark_evidence(item.evidence, reason), f"{reason}: {item.text}"
     return None
+
+
+def _is_education_reason(reason: str) -> bool:
+    lowered = reason.lower()
+    return "education" in lowered or "degree" in lowered or "postgraduate" in lowered
 
 
 def _term_options(normalized: str) -> list[str]:

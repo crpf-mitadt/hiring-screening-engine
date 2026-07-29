@@ -144,6 +144,9 @@ cached artifacts only when source content hashes and relevant model/prompt setti
 
 Use `--force` to regenerate all stages, `--no-cache` to disable reuse, `--list-jds` or
 `--list-resumes` to inspect configured input directories, and `--search` to filter list output.
+For resume PDFs, omit `--ocr-pages` to process every page. Use `--ocr-pages N` only as an explicit
+cap. A cap that processes fewer than all source pages is marked partial and stops before scoring
+unless `--allow-partial-evaluation` is passed.
 
 Output layout:
 
@@ -163,3 +166,17 @@ outputs/matches/<job-id>/<candidate-id>/<timestamp>/
 The terminal and summary outputs do not include raw prompts, raw model responses, email addresses,
 phone numbers, or home addresses. They retain the decision-support disclaimer and
 `human_review_required=true`.
+
+For the July 29, 2026 Tyrone retest of the Research Assistant AI CoE pair, avoid the incomplete
+one-page cache:
+
+```bash
+PIPELINE_DEBUG_RAW_RESPONSES=false \
+uv run chandra-eval match \
+  --jd "inputs/jds/Job description - Research Assistant AI CoE.docx" \
+  --resume "inputs/resumes/VijaySamuelHeHimResume.pdf" \
+  --output-root outputs/matches \
+  --force
+```
+
+Do not add `--ocr-pages` for that retest; all resume pages must be processed.

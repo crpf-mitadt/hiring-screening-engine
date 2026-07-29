@@ -52,6 +52,10 @@ class ScoringCriterion(StrictBaseModel):
     mandatory: bool = False
     accepted_evidence: list[str] = Field(default_factory=list)
     scoring_guidance: str = ""
+    requirement_ids: list[str] = Field(default_factory=list)
+    required_skill_names: list[str] = Field(default_factory=list)
+    preferred_skill_names: list[str] = Field(default_factory=list)
+    evaluation_dimensions: list[str] = Field(default_factory=list)
 
 
 class StructuredJD(StrictBaseModel):

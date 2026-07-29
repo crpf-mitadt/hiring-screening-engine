@@ -53,11 +53,14 @@ python scripts/build_report.py outputs/live --json --csv --html
 
 `run_full_resume_ocr.py` writes:
 
-- `raw-responses.json`
 - `page-001.html`, `page-001-metadata.json`, and subsequent pages
 - `document.json`
 - `source-map.json`
 - `metadata.json`
+
+Raw Chandra response bodies are written only when `PIPELINE_DEBUG_RAW_RESPONSES=true`. Metadata
+records `source_page_count`, `processed_page_count`, `processed_page_numbers`, `partial_ocr`, and
+whether raw responses were persisted.
 
 The primary end-to-end command is:
 
@@ -68,3 +71,7 @@ uv run chandra-eval match
 It discovers configured JD/resume inputs interactively or accepts `--jd` and `--resume` for
 automation. Each run writes a unique match directory containing structured artifacts, reports, and
 both JSON and Markdown summaries for later comparison.
+
+For PDF resumes, omitted `--ocr-pages` means all source pages. An explicit page cap is recorded as
+partial OCR when fewer than all source pages are processed; partial OCR cannot proceed to ordinary
+scoring unless explicitly allowed.

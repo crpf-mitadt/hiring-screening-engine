@@ -27,14 +27,14 @@ from chandra_eval.ingestion.resume_document import (
 )
 from chandra_eval.llm.prompt_versions import JD_STRUCTURING_PROMPT_VERSION, RESUME_STRUCTURING_PROMPT_VERSION
 from chandra_eval.ocr.chandra_client import ChandraClient
-from chandra_eval.ocr.full_document import ocr_pdf_pages, write_ocr_artifacts
+from chandra_eval.ocr.full_document import ocr_pdf_pages, pdf_page_count, write_ocr_artifacts
 from chandra_eval.pipeline.candidate_evaluation import evaluate_candidate_files
 from chandra_eval.pipeline.jd_structuring import structure_jd_document_file
 from chandra_eval.pipeline.resume_structuring import structure_resume_from_ocr
 from chandra_eval.reports.csv_report import write_csv_report
 from chandra_eval.reports.html_report import write_html_report
 from chandra_eval.reports.json_report import write_json_report
-from chandra_eval.schemas.evaluation import CandidateEvaluationReport
+from chandra_eval.schemas.evaluation import CandidateEvaluationReport, EligibilityStatus
 
 
 JD_EXTENSIONS = {".docx", ".txt", ".md", ".pdf"}
@@ -75,8 +75,9 @@ class MatchWorkflowOptions:
     skip_preflight: bool = False
     quiet: bool = False
     json_summary: bool = False
-    ocr_pages: int = 1
+    ocr_pages: int | None = None
     ocr_max_tokens: int = 4096
+    allow_partial_evaluation: bool = False
 
 
 @dataclass
@@ -239,12 +240,17 @@ def run_match_workflow(
         stages.append(StageRecord("resume_structuring", "reused", 0.0, str(_safe_path(resume_path))))
         ocr_input = resume_path
     elif resume_path.suffix.lower() == ".pdf":
+        source_page_count = pdf_page_count(resume_path)
+        processed_page_count = source_page_count if options.ocr_pages is None else min(options.ocr_pages, source_page_count)
+        processed_page_numbers = list(range(1, processed_page_count + 1))
         ocr_cache_key = _cache_key(
             "resume-ocr",
             source_hashes["resume"],
             settings.chandra_model,
-            str(options.ocr_pages),
+            f"source-pages={source_page_count}",
+            f"processed-pages={','.join(str(page) for page in processed_page_numbers)}",
             str(options.ocr_max_tokens),
+            f"debug-raw={settings.pipeline_debug_raw_responses}",
         )
         ocr_dir = run_dir / "ocr"
         _cached_dir_stage(
@@ -254,8 +260,26 @@ def run_match_workflow(
             ocr_dir,
             read_cache,
             use_cache,
-            lambda: _ocr_resume_pdf(resume_path, ocr_dir, settings, options),
+            lambda: _ocr_resume_pdf(
+                resume_path,
+                ocr_dir,
+                settings,
+                options,
+                source_page_count=source_page_count,
+                processed_page_numbers=processed_page_numbers,
+            ),
         )
+        ocr_metadata = _load_ocr_metadata(ocr_dir)
+        if ocr_metadata.get("partial_ocr"):
+            warning = (
+                "Partial resume OCR: processed "
+                f"{ocr_metadata.get('processed_page_count')} of {ocr_metadata.get('source_page_count')} pages."
+            )
+            warnings.append(warning)
+            if not (options.allow_partial_evaluation or settings.allow_partial_evaluation):
+                raise RuntimeError(
+                    f"{warning} Re-run without --ocr-pages or pass --allow-partial-evaluation."
+                )
         ocr_input = ocr_dir
     else:
         ocr_input = resume_path
@@ -290,6 +314,12 @@ def run_match_workflow(
         "evaluation",
         lambda: evaluate_candidate_files(resume_structured, jd_structured, evaluation_path),
     )
+    if options.mock_llm:
+        report = report.model_copy(update={"mock_evaluation": True})
+        write_json_report(report, evaluation_path)
+    if warnings:
+        report = _apply_workflow_warnings(report, warnings)
+        write_json_report(report, evaluation_path)
     _verify_arithmetic(report)
     _timed_stage(
         stages,
@@ -371,14 +401,39 @@ def _ingest_jd_stage(
             raise
         ocr_dir = jd_text_path.parent / "jd-ocr"
         responses = ocr_pdf_pages(jd_path, ChandraClient(settings), page_count=options.ocr_pages, max_tokens=options.ocr_max_tokens)
-        write_ocr_artifacts(responses=responses, output_dir=ocr_dir, source_pdf=str(jd_path), model=settings.chandra_model)
+        source_pages = pdf_page_count(jd_path)
+        write_ocr_artifacts(
+            responses=responses,
+            output_dir=ocr_dir,
+            source_pdf=str(jd_path),
+            model=settings.chandra_model,
+            source_page_count=source_pages,
+            processed_page_numbers=list(range(1, len(responses) + 1)),
+            debug_raw_responses=settings.pipeline_debug_raw_responses,
+        )
         ocr_document = load_ocr_document(ocr_dir)
         jd_text_path.write_text(prompt_text_from_ocr(ocr_document), encoding="utf-8")
 
 
-def _ocr_resume_pdf(resume_path: Path, output_dir: Path, settings: Settings, options: MatchWorkflowOptions) -> None:
+def _ocr_resume_pdf(
+    resume_path: Path,
+    output_dir: Path,
+    settings: Settings,
+    options: MatchWorkflowOptions,
+    *,
+    source_page_count: int,
+    processed_page_numbers: list[int],
+) -> None:
     responses = ocr_pdf_pages(resume_path, ChandraClient(settings), page_count=options.ocr_pages, max_tokens=options.ocr_max_tokens)
-    write_ocr_artifacts(responses=responses, output_dir=output_dir, source_pdf=str(resume_path), model=settings.chandra_model)
+    write_ocr_artifacts(
+        responses=responses,
+        output_dir=output_dir,
+        source_pdf=str(resume_path),
+        model=settings.chandra_model,
+        source_page_count=source_page_count,
+        processed_page_numbers=processed_page_numbers,
+        debug_raw_responses=settings.pipeline_debug_raw_responses,
+    )
 
 
 def _timed_stage(stages: list[StageRecord], name: str, fn):
@@ -442,6 +497,31 @@ def _write_reports(report: CandidateEvaluationReport, run_dir: Path) -> None:
     write_html_report(report, run_dir / "evaluation.html")
 
 
+def _load_ocr_metadata(path: Path) -> dict:
+    metadata_path = path / "metadata.json"
+    if not metadata_path.is_file():
+        return {}
+    return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+
+def _apply_workflow_warnings(report: CandidateEvaluationReport, warnings: list[str]) -> CandidateEvaluationReport:
+    eligibility = report.eligibility
+    if warnings:
+        eligibility = eligibility.model_copy(
+            update={
+                "status": EligibilityStatus.REVIEW,
+                "explanation": f"{eligibility.explanation} Workflow warnings require human review.",
+            }
+        )
+    return report.model_copy(
+        update={
+            "eligibility": eligibility,
+            "warnings": sorted(set([*report.warnings, *warnings])),
+            "evidence_completeness": min(report.evidence_completeness, 0.5),
+        }
+    )
+
+
 def _build_summary(
     *,
     report: CandidateEvaluationReport,
@@ -473,6 +553,7 @@ def _build_summary(
         "token_budgets": {"gemma_resume_max_tokens": settings.gemma_resume_max_tokens},
         "enable_thinking_false_requested": True,
         "response_format_usage": "json_object unless explicit API compatibility fallback",
+        "ocr_page_coverage": _ocr_page_coverage(run_dir),
         "stages": {stage.name: stage.as_dict() for stage in stages},
         "total_elapsed_seconds": round(total_elapsed, 3),
         "extraction_methods": _extraction_methods(run_dir),
@@ -482,6 +563,7 @@ def _build_summary(
         "required_skill_matches": _criterion_match_summary(report, preferred=False),
         "preferred_skill_matches": _criterion_match_summary(report, preferred=True),
         "mandatory_requirement_statuses": report.eligibility.requirement_statuses,
+        "mandatory_requirement_details": report.eligibility.requirement_details,
         "criterion_scores": [
             {
                 "criterion_id": item.criterion_id,
@@ -514,15 +596,18 @@ def _build_summary(
         "errors": [],
         "warnings": warnings,
         "raw_debug_persistence_enabled": settings.pipeline_debug_raw_responses,
+        "raw_artifacts_persisted": _raw_artifacts_persisted(run_dir),
         "human_review_disclaimer": report.human_review_disclaimer,
     }
 
 
 def _summary_markdown(summary: dict) -> str:
     mandatory_rows = "\n".join(
-        f"| {key} | {value} | | |"
-        for key, value in summary["mandatory_requirement_statuses"].items()
-    ) or "| None | not_applicable | | |"
+        f"| {item.get('description', item.get('requirement_id', ''))} | {item.get('status', 'unclear')} | "
+        f"{_summary_requirement_evidence(item)} | "
+        f"{'; '.join(item.get('ambiguity', [])) or item.get('missing_evidence', '') or 'None'} |"
+        for item in summary.get("mandatory_requirement_details", [])
+    ) or "| None | not_applicable | No direct evidence recorded. | None |"
     criterion_rows = "\n".join(
         f"| {item['criterion_id']} | {item['match_fraction']:.3f} | {item['weighted_score']:.3f} | {item['status']} |"
         for item in summary["criterion_scores"]
@@ -549,6 +634,7 @@ Models: Chandra={summary['chandra_model']}, Gemma={summary['gemma_model']}
 * Score: {summary['final_score']} / {summary['maximum_score']}
 * Evidence completeness: {summary['evidence_completeness']}
 * Human review required: {'yes' if summary['human_review_required'] else 'no'}
+* OCR page coverage: {summary['ocr_page_coverage'].get('processed_page_count')} / {summary['ocr_page_coverage'].get('source_page_count')}
 
 ## Mandatory requirements
 
@@ -757,3 +843,35 @@ def _criterion_match_summary(report: CandidateEvaluationReport, *, preferred: bo
         for item in report.criterion_evaluations
         if needle in item.criterion_id.lower() or needle in item.explanation.lower()
     ]
+
+
+def _ocr_page_coverage(run_dir: Path) -> dict:
+    metadata = _load_ocr_metadata(run_dir / "ocr")
+    return {
+        "source_page_count": metadata.get("source_page_count"),
+        "processed_page_count": metadata.get("processed_page_count"),
+        "processed_page_numbers": metadata.get("processed_page_numbers", []),
+        "partial_ocr": metadata.get("partial_ocr", False),
+    }
+
+
+def _raw_artifacts_persisted(run_dir: Path) -> dict:
+    metadata = _load_ocr_metadata(run_dir / "ocr")
+    return {
+        "chandra_raw_responses": bool(metadata.get("raw_responses_persisted", False)),
+        "gemma_raw_responses": (run_dir / "structured-resume-gemma-response.json").is_file(),
+    }
+
+
+def _summary_requirement_evidence(item: dict) -> str:
+    evidence = item.get("evidence") or []
+    if not evidence:
+        return "No direct evidence recorded."
+    texts = []
+    for evidence_item in evidence[:3]:
+        text = evidence_item.get("normalized_text") or evidence_item.get("exact_text") or ""
+        page = evidence_item.get("page_number")
+        block = evidence_item.get("block_index")
+        location = f" page {page} block {block}" if page is not None or block is not None else ""
+        texts.append(f"{text[:80]}{location}")
+    return "<br>".join(texts)

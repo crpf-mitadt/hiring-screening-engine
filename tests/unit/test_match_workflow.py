@@ -61,6 +61,7 @@ class MatchWorkflowTests(unittest.TestCase):
             self.assertNotIn("person@example.com", summary_text)
             summary = json.loads(summary_text)
             self.assertEqual(summary["human_review_required"], True)
+            self.assertEqual(summary["raw_artifacts_persisted"]["chandra_raw_responses"], False)
             self.assertIn("evaluation_html", summary["generated_artifact_paths"])
             self.assertGreaterEqual(summary["final_score"], 0)
 

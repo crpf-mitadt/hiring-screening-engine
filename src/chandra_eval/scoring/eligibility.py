@@ -15,46 +15,89 @@ def evaluate_eligibility(
     failed: list[str] = []
     ambiguous: list[str] = []
     requirement_statuses: dict[str, str] = {}
+    requirement_details: list[dict] = []
     index = build_candidate_evidence_index(candidate)
     duration = calculate_experience_duration(candidate.experience)
 
     for requirement in jd.mandatory_requirements:
         checked.append(requirement.requirement_id)
+        detail = {
+            "requirement_id": requirement.requirement_id,
+            "description": requirement.description,
+            "category": requirement.category.value,
+            "status": "unclear",
+            "evidence": [],
+            "missing_evidence": "",
+            "ambiguity": [],
+        }
         if requirement.category == RequirementCategory.SKILL:
             match = match_requirement(requirement.description, index, requirement.accepted_equivalents)
             if match.fraction > 0:
                 requirement_statuses[requirement.requirement_id] = "met"
+                detail["status"] = "met"
+                detail["evidence"] = [item.model_dump(mode="json") for item in match.evidence]
+                if not match.evidence:
+                    detail["missing_evidence"] = "Matched scoring-safe profile text without source block evidence; verify manually."
             else:
                 requirement_statuses[requirement.requirement_id] = "not_found"
+                detail["status"] = "not_found"
+                detail["missing_evidence"] = "No direct resume evidence found for this mandatory skill."
                 ambiguous.append(requirement.requirement_id)
         elif requirement.category == RequirementCategory.EXPERIENCE:
             if requirement.minimum_value is None:
                 requirement_statuses[requirement.requirement_id] = "unclear"
+                detail["status"] = "unclear"
+                detail["ambiguity"].append("Experience requirement has no deterministic minimum value.")
                 ambiguous.append(requirement.requirement_id)
             elif duration.confirmed_months >= int(requirement.minimum_value):
                 requirement_statuses[requirement.requirement_id] = "met"
+                detail["status"] = "met"
             elif duration.uncertain_ranges:
                 requirement_statuses[requirement.requirement_id] = "unclear"
+                detail["status"] = "unclear"
+                detail["ambiguity"].extend(duration.date_warnings)
                 ambiguous.append(requirement.requirement_id)
             elif duration.confirmed_months == 0:
                 requirement_statuses[requirement.requirement_id] = "not_found"
+                detail["status"] = "not_found"
+                detail["missing_evidence"] = "No parseable experience date range found."
                 ambiguous.append(requirement.requirement_id)
             else:
                 requirement_statuses[requirement.requirement_id] = "not_met"
+                detail["status"] = "not_met"
+                detail["missing_evidence"] = (
+                    f"Confirmed {duration.confirmed_months} months below "
+                    f"{int(requirement.minimum_value)} required months."
+                )
                 failed.append(requirement.requirement_id)
         elif requirement.category in {RequirementCategory.EDUCATION, RequirementCategory.LANGUAGE, RequirementCategory.DOMAIN}:
-            match = match_requirement(requirement.description, index, requirement.accepted_equivalents)
+            allowed_sources = {"education"} if requirement.category == RequirementCategory.EDUCATION else None
+            match = match_requirement(
+                requirement.description,
+                index,
+                requirement.accepted_equivalents,
+                allowed_sources=allowed_sources,
+            )
             if match.fraction > 0:
                 requirement_statuses[requirement.requirement_id] = (
                     "partially_met" if requirement.category == RequirementCategory.EDUCATION else "met"
                 )
+                detail["status"] = requirement_statuses[requirement.requirement_id]
+                detail["evidence"] = [item.model_dump(mode="json") for item in match.evidence]
+                if not match.evidence:
+                    detail["missing_evidence"] = "Matched scoring-safe profile text without source block evidence; verify manually."
                 ambiguous.append(requirement.requirement_id) if requirement.category == RequirementCategory.EDUCATION else None
             else:
                 requirement_statuses[requirement.requirement_id] = "not_found"
+                detail["status"] = "not_found"
+                detail["missing_evidence"] = "No direct resume evidence found for this mandatory requirement."
                 ambiguous.append(requirement.requirement_id)
         else:
             requirement_statuses[requirement.requirement_id] = "unclear"
+            detail["status"] = "unclear"
+            detail["ambiguity"].append("No deterministic mandatory checker exists for this category.")
             ambiguous.append(requirement.requirement_id)
+        requirement_details.append(detail)
 
     if failed:
         status = EligibilityStatus.FAIL
@@ -72,5 +115,6 @@ def evaluate_eligibility(
         failed_requirements=failed,
         ambiguous_requirements=ambiguous,
         requirement_statuses=requirement_statuses,
+        requirement_details=requirement_details,
         explanation=explanation,
     )

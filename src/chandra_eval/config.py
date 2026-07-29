@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     jd_input_dir: Path = Path("inputs/jds")
     match_output_root: Path = Path("outputs/matches")
     pipeline_debug_raw_responses: bool = False
+    allow_partial_evaluation: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env",

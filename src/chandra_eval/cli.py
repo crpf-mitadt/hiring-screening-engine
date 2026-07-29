@@ -45,8 +45,13 @@ def _add_match_parser(subparsers) -> None:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--mock-llm", action="store_true", help="Use deterministic mock extraction where structuring is needed.")
     parser.add_argument("--skip-preflight", action="store_true", help="Skip live service checks.")
-    parser.add_argument("--ocr-pages", type=int, default=1)
+    parser.add_argument("--ocr-pages", type=int)
     parser.add_argument("--ocr-max-tokens", type=int, default=4096)
+    parser.add_argument(
+        "--allow-partial-evaluation",
+        action="store_true",
+        help="Allow scoring from intentionally partial OCR; eligibility will be REVIEW.",
+    )
 
 
 def _run_match(args) -> int:
@@ -77,6 +82,7 @@ def _run_match(args) -> int:
                 json_summary=args.json_summary,
                 ocr_pages=args.ocr_pages,
                 ocr_max_tokens=args.ocr_max_tokens,
+                allow_partial_evaluation=args.allow_partial_evaluation,
             ),
             settings=settings,
         )

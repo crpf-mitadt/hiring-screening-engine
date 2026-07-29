@@ -14,9 +14,21 @@ def write_html_report(report: CandidateEvaluationReport, path: Path) -> Path:
         f"<td>{item.match_fraction:.3f}</td>"
         f"<td>{item.weighted_score:.3f}</td>"
         f"<td>{escape(item.explanation)}</td>"
+        f"<td>{escape('; '.join(item.evidence_found) or 'No direct evidence recorded.')}</td>"
+        f"<td>{escape('; '.join(item.verification_needed) or 'None')}</td>"
         "</tr>"
         for item in report.criterion_evaluations
     )
+    requirement_rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(str(item.get('description', item.get('requirement_id', ''))))}</td>"
+        f"<td>{escape(str(item.get('status', 'unclear')))}</td>"
+        f"<td>{escape(_requirement_evidence_text(item))}</td>"
+        f"<td>{escape('; '.join(item.get('ambiguity', [])) or item.get('missing_evidence', '') or 'None')}</td>"
+        "</tr>"
+        for item in report.eligibility.requirement_details
+    )
+    warning_items = "".join(f"<li>{escape(warning)}</li>" for warning in report.warnings)
     html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -36,11 +48,20 @@ def write_html_report(report: CandidateEvaluationReport, path: Path) -> Path:
   <p><strong>Eligibility:</strong> {escape(report.eligibility.status.value)}</p>
   <p><strong>Final score:</strong> {report.final_score:.3f} / {report.maximum_score:.1f}</p>
   <p><strong>Evidence completeness:</strong> {report.evidence_completeness:.3f}</p>
+  <p><strong>Scoring version:</strong> {escape(report.scoring_version)}</p>
+  <p><strong>Mock evaluation:</strong> {str(report.mock_evaluation).lower()}</p>
   <p><strong>Recommendation label:</strong> {escape(report.recommendation_label)}</p>
   <div class="notice">{escape(report.human_review_disclaimer)}</div>
+  <h2>Warnings</h2>
+  <ul>{warning_items or '<li>None</li>'}</ul>
+  <h2>Mandatory Requirements</h2>
+  <table>
+    <thead><tr><th>Requirement</th><th>Status</th><th>Evidence</th><th>Notes</th></tr></thead>
+    <tbody>{requirement_rows}</tbody>
+  </table>
   <h2>Criteria</h2>
   <table>
-    <thead><tr><th>Criterion</th><th>Status</th><th>Match</th><th>Score</th><th>Explanation</th></tr></thead>
+    <thead><tr><th>Criterion</th><th>Status</th><th>Match</th><th>Score</th><th>Explanation</th><th>Evidence</th><th>Verification</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
 </body>
@@ -49,3 +70,17 @@ def write_html_report(report: CandidateEvaluationReport, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html, encoding="utf-8")
     return path
+
+
+def _requirement_evidence_text(item: dict) -> str:
+    evidence = item.get("evidence") or []
+    if not evidence:
+        return item.get("missing_evidence") or "No direct evidence recorded."
+    texts = []
+    for evidence_item in evidence:
+        text = evidence_item.get("normalized_text") or evidence_item.get("exact_text") or ""
+        page = evidence_item.get("page_number")
+        block = evidence_item.get("block_index")
+        suffix = f" (page {page}, block {block})" if page is not None or block is not None else ""
+        texts.append(f"{text[:160]}{suffix}")
+    return "; ".join(texts)

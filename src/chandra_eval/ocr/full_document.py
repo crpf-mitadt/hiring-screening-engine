@@ -6,20 +6,31 @@ from typing import Any
 
 from chandra.prompts import OCR_LAYOUT_PROMPT
 from chandra.model.util import scale_to_fit
+import pypdfium2 as pdfium
 
 from chandra_eval.ingestion.chandra_html import parse_chandra_html
 from chandra_eval.ocr.chandra_client import ChandraClient
 from chandra_eval.ocr.rendering import render_pdf_page
 
 
+def pdf_page_count(path: Path) -> int:
+    document = pdfium.PdfDocument(str(path))
+    try:
+        return len(document)
+    finally:
+        document.close()
+
+
 def ocr_pdf_pages(
     path: Path,
     client: ChandraClient,
-    page_count: int,
+    page_count: int | None = None,
     max_tokens: int = 4096,
 ) -> list[dict]:
+    source_page_count = pdf_page_count(path)
+    processed_count = source_page_count if page_count is None else min(page_count, source_page_count)
     results: list[dict] = []
-    for page_index in range(page_count):
+    for page_index in range(processed_count):
         image = scale_to_fit(render_pdf_page(path, page_index=page_index))
         results.append(client.chat_ocr(image, OCR_LAYOUT_PROMPT, max_tokens=max_tokens))
     return results
@@ -56,18 +67,23 @@ def write_ocr_artifacts(
     output_dir: Path,
     source_pdf: str | None = None,
     model: str | None = None,
+    source_page_count: int | None = None,
+    processed_page_numbers: list[int] | None = None,
+    debug_raw_responses: bool = False,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "raw-responses.json").write_text(
-        json.dumps(responses, indent=2),
-        encoding="utf-8",
-    )
+    if debug_raw_responses:
+        (output_dir / "raw-responses.json").write_text(
+            json.dumps(responses, indent=2),
+            encoding="utf-8",
+        )
 
     document_pages: list[dict[str, Any]] = []
     source_map: list[dict[str, Any]] = []
     page_metadata: list[dict[str, Any]] = []
+    page_numbers = processed_page_numbers or list(range(1, len(responses) + 1))
 
-    for index, response in enumerate(responses, start=1):
+    for index, response in zip(page_numbers, responses, strict=False):
         html, warnings = extract_response_content(response)
         html_path = output_dir / f"page-{index:03d}.html"
         html_path.write_text(html, encoding="utf-8")
@@ -123,12 +139,21 @@ def write_ocr_artifacts(
 
     document = {
         "source_pdf": source_pdf,
+        "source_page_count": source_page_count,
+        "processed_page_count": len(responses),
+        "processed_page_numbers": page_numbers,
+        "partial_ocr": source_page_count is not None and len(responses) < source_page_count,
         "page_count": len(responses),
         "pages": document_pages,
     }
     metadata = {
         "source_pdf": source_pdf,
         "model": model,
+        "source_page_count": source_page_count,
+        "processed_page_count": len(responses),
+        "processed_page_numbers": page_numbers,
+        "partial_ocr": source_page_count is not None and len(responses) < source_page_count,
+        "raw_responses_persisted": debug_raw_responses,
         "page_count": len(responses),
         "pages": page_metadata,
         "artifact_contract_version": 1,
