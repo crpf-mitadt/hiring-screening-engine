@@ -94,10 +94,15 @@ def _requirement_evidence_text(item: dict) -> str:
 def _component_summary(assessment: dict) -> str:
     parts: list[str] = []
     for label, key in (
+        ("required/core", "required_core_components"),
         ("core", "supported_core_components"),
+        ("preferred considered", "preferred_components"),
         ("preferred", "supported_preferred_components"),
+        ("source adjacent considered", "source_declared_adjacent_components"),
+        ("inferred adjacent", "inferred_adjacent_components"),
         ("adjacent", "supported_adjacent_components"),
         ("controlled", "controlled_equivalents_used"),
+        ("dimensions considered", "evaluation_dimension_components"),
         ("evaluation dimensions", "supported_evaluation_dimensions"),
         ("missing core", "missing_core_components"),
         ("missing preferred", "missing_preferred_components"),

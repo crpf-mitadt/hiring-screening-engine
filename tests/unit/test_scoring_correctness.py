@@ -1192,6 +1192,257 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertIn("Communication", supported("Presented findings to stakeholders and authored documentation."))
         self.assertIn("Problem-solving", supported("Diagnosed the outage root cause and resolved the production issue."))
 
+    def test_dimensions_do_not_delete_linked_required_preferred_or_adjacent_components(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_docker",
+                    category=RequirementCategory.SKILL,
+                    description="Docker is required.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="all-sources",
+                    name="All Sources",
+                    category=RequirementCategory.LEADERSHIP,
+                    description="Docker, Python, GitHub, JavaScript, communication.",
+                    weight=100,
+                    requirement_ids=["req_docker"],
+                    required_skill_names=["Python"],
+                    preferred_skill_names=["GitHub"],
+                    adjacent_skill_names=["JavaScript"],
+                    evaluation_dimensions=["Communication"],
+                )
+            ],
+        )
+        communication = "Presented findings to stakeholders."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["Docker", "Python", "GitHub", "JavaScript"],
+                "experience": [
+                    {
+                        "responsibilities": [communication],
+                        "evidence": [_evidence(communication).model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+
+        criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+        assessment = criterion.component_assessment
+
+        self.assertIn("Docker", assessment["required_core_components"])
+        self.assertIn("Python", assessment["required_core_components"])
+        self.assertEqual(assessment["preferred_components"], ["GitHub"])
+        self.assertEqual(assessment["source_declared_adjacent_components"], ["JavaScript"])
+        self.assertEqual(assessment["evaluation_dimension_components"], ["Communication"])
+        self.assertIn("Docker", assessment["supported_core_components"])
+        self.assertIn("Python", assessment["supported_core_components"])
+        self.assertEqual(assessment["supported_preferred_components"], ["GitHub"])
+        self.assertEqual(assessment["supported_adjacent_components"], ["JavaScript"])
+        self.assertEqual(assessment["supported_evaluation_dimensions"], ["Communication"])
+        self.assertEqual(criterion.match_fraction, 1)
+
+    def test_component_source_combination_matrix_preserves_all_populated_fields(self) -> None:
+        source_cases = [
+            {"name": "required only", "required": ["Python"]},
+            {"name": "preferred only", "preferred": ["GitHub"]},
+            {"name": "adjacent only", "adjacent": ["JavaScript"]},
+            {"name": "dimensions only", "dimensions": ["Communication"]},
+            {"name": "linked only", "linked": True},
+            {"name": "required preferred", "required": ["Python"], "preferred": ["GitHub"]},
+            {"name": "required adjacent", "required": ["Python"], "adjacent": ["JavaScript"]},
+            {"name": "required dimensions", "required": ["Python"], "dimensions": ["Communication"]},
+            {"name": "preferred dimensions", "preferred": ["GitHub"], "dimensions": ["Communication"]},
+            {"name": "linked required", "linked": True, "required": ["Python"]},
+            {"name": "linked dimensions", "linked": True, "dimensions": ["Communication"]},
+            {"name": "required preferred dimensions", "required": ["Python"], "preferred": ["GitHub"], "dimensions": ["Communication"]},
+            {
+                "name": "all non-experience sources",
+                "linked": True,
+                "required": ["Python"],
+                "preferred": ["GitHub"],
+                "adjacent": ["JavaScript"],
+                "dimensions": ["Communication"],
+            },
+        ]
+        communication = "Presented findings to stakeholders."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["Docker", "Python", "GitHub", "JavaScript"],
+                "experience": [
+                    {
+                        "responsibilities": [communication],
+                        "evidence": [_evidence(communication).model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+
+        for index, case in enumerate(source_cases):
+            with self.subTest(case=case["name"]):
+                linked = bool(case.get("linked"))
+                jd = StructuredJD(
+                    job_id=f"job-{index}",
+                    source_document_id="jd",
+                    job_title="Developer",
+                    mandatory_requirements=[
+                        JDRequirement(
+                            requirement_id="req_docker",
+                            category=RequirementCategory.SKILL,
+                            description="Docker is required.",
+                            requirement_type=RequirementType.MINIMUM,
+                            mandatory=True,
+                        )
+                    ]
+                    if linked
+                    else [],
+                    scoring_rubric=[
+                        ScoringCriterion(
+                            criterion_id="criterion",
+                            name="Criterion",
+                            category=RequirementCategory.SKILL,
+                            description=case["name"],
+                            weight=100,
+                            requirement_ids=["req_docker"] if linked else [],
+                            required_skill_names=case.get("required", []),
+                            preferred_skill_names=case.get("preferred", []),
+                            adjacent_skill_names=case.get("adjacent", []),
+                            evaluation_dimensions=case.get("dimensions", []),
+                        )
+                    ],
+                )
+                criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+                assessment = criterion.component_assessment
+                self.assertEqual(criterion.weighted_score, criterion.weight * criterion.match_fraction)
+                for term in case.get("required", []):
+                    self.assertIn(term, assessment["required_core_components"])
+                for term in case.get("preferred", []):
+                    self.assertIn(term, assessment["preferred_components"])
+                    self.assertNotIn(term, assessment["required_core_components"])
+                for term in case.get("adjacent", []):
+                    self.assertIn(term, assessment["source_declared_adjacent_components"])
+                    self.assertNotIn(term, assessment["required_core_components"])
+                for term in case.get("dimensions", []):
+                    self.assertIn(term, assessment["evaluation_dimension_components"])
+                if linked:
+                    self.assertIn("req_docker", assessment["represented_requirement_ids"])
+
+    def test_serialization_order_duplicate_and_report_consistency_invariants(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="mixed",
+                    name="Mixed Components",
+                    category=RequirementCategory.SKILL,
+                    description="Python required, GitHub preferred, JavaScript adjacent.",
+                    weight=100,
+                    required_skill_names=["Python"],
+                    preferred_skill_names=["GitHub"],
+                    adjacent_skill_names=["JavaScript"],
+                )
+            ],
+        )
+        duplicate_python = _evidence("Python").model_dump(mode="json")
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["JavaScript", "Python", "GitHub", "UnrelatedSkill", "Python"],
+                "experience": [
+                    {
+                        "responsibilities": ["Python"],
+                        "evidence": [duplicate_python, duplicate_python],
+                    }
+                ],
+            }
+        )
+        reloaded_jd = StructuredJD.model_validate_json(jd.model_dump_json())
+        reloaded_candidate = CandidateProfile.model_validate_json(candidate.model_dump_json())
+
+        report = evaluate_candidate(reloaded_candidate.scoring_safe_profile, reloaded_jd, evaluation_id="eval-matrix")
+        report_again = evaluate_candidate(reloaded_candidate.scoring_safe_profile, reloaded_jd, evaluation_id="eval-matrix")
+
+        self.assertEqual(
+            report.model_dump(mode="json", exclude={"criterion_evaluations": {0: {"evidence": True}}})["criterion_evaluations"],
+            report_again.model_dump(mode="json", exclude={"criterion_evaluations": {0: {"evidence": True}}})["criterion_evaluations"],
+        )
+        self.assertEqual(report.final_score, report_again.final_score)
+        self.assertEqual(report.evidence_completeness, report_again.evidence_completeness)
+        self.assertEqual(report.criterion_evaluations[0].match_fraction, 1)
+        self.assertEqual(report.evidence_completeness_diagnostics["deduplicated_source_count"], 3)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from chandra_eval.reports.csv_report import write_csv_report
+            from chandra_eval.reports.html_report import write_html_report
+            from chandra_eval.reports.json_report import write_json_report
+
+            json_path = write_json_report(report, root / "evaluation.json")
+            csv_path = write_csv_report(report, root / "evaluation.csv")
+            html_path = write_html_report(report, root / "evaluation.html")
+
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            csv_text = csv_path.read_text(encoding="utf-8")
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn("preferred_components", str(payload))
+        self.assertIn("preferred considered: GitHub", csv_text)
+        self.assertIn("source adjacent considered: JavaScript", html_text)
+
+    def test_golden_synthetic_scenarios_cover_expected_invariant_outcomes(self) -> None:
+        scenarios = [
+            ("strong", ["PHP", "Laravel", "WordPress", "MySQL", "JavaScript"], "2023-01", "2025-07", 1.0),
+            ("adjacent-stack", ["MySQL", "JavaScript", "React.js", "Node.js"], "2023-01", "2025-07", 0.5),
+            ("experience-only", [], "2023-01", "2025-07", 0.25),
+            ("unrelated", ["Excel"], "2020-01", "2025-07", 0.0),
+        ]
+        jd = self._golden_full_stack_jd()
+        for name, skills, start, end, expected_technical_fraction in scenarios:
+            with self.subTest(name=name):
+                relevant = "Delivered full-stack development for REST API products."
+                responsibilities = [relevant] if name != "unrelated" else ["Coordinated office administration."]
+                candidate = CandidateProfile.model_validate(
+                    {
+                        "candidate_id": name,
+                        "source_document_id": "resume",
+                        "skills": skills,
+                        "experience": [
+                            {
+                                "title": "Software Developer" if name != "unrelated" else "Office Administrator",
+                                "start_date": start,
+                                "end_date": end,
+                                "responsibilities": responsibilities,
+                                "evidence": [
+                                    _evidence("Software Developer" if name != "unrelated" else "Office Administrator").model_dump(mode="json"),
+                                    _evidence(f"{start} - {end}").model_dump(mode="json"),
+                                    *[_evidence(text).model_dump(mode="json") for text in responsibilities],
+                                ],
+                            }
+                        ],
+                    }
+                )
+                report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+                technical = {item.criterion_id: item for item in report.criterion_evaluations}["technical"]
+                self.assertEqual(technical.match_fraction, expected_technical_fraction)
+                self.assertTrue(report.human_review_required)
+                for criterion in report.criterion_evaluations:
+                    if criterion.weighted_score > 0:
+                        self.assertGreater(len(criterion.evidence), 0)
+
     def test_met_experience_requirement_uses_explanation_not_ambiguity(self) -> None:
         candidate = CandidateProfile.model_validate(
             {
@@ -1551,6 +1802,51 @@ class ScoringCorrectnessTests(unittest.TestCase):
                     required_skill_names=["DevOps"],
                     preferred_skill_names=["GitLab", "GitHub"],
                 )
+            ],
+        )
+
+    def _golden_full_stack_jd(self) -> StructuredJD:
+        return StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_exp",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                ),
+                JDRequirement(
+                    requirement_id="req_db",
+                    category=RequirementCategory.SKILL,
+                    description="Experience with MySQL or similar enterprise databases.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                ),
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="technical",
+                    name="Technical Stack",
+                    category=RequirementCategory.SKILL,
+                    description="PHP, Laravel, WordPress, SQL/database management.",
+                    weight=50,
+                    requirement_ids=["req_db"],
+                    required_skill_names=["PHP", "Laravel", "WordPress", "SQL/database management"],
+                ),
+                ScoringCriterion(
+                    criterion_id="experience",
+                    name="Experience",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    weight=50,
+                    requirement_ids=["req_exp"],
+                ),
             ],
         )
 

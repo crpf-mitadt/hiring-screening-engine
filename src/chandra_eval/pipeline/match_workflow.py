@@ -784,17 +784,35 @@ def _summary_component_text(item: dict) -> str:
     assessment = item.get("component_assessment") or {}
     parts: list[str] = []
     supported_core = assessment.get("supported_core_components") or []
+    supported_preferred = assessment.get("supported_preferred_components") or []
     supported_adjacent = assessment.get("supported_adjacent_components") or []
+    supported_dimensions = assessment.get("supported_evaluation_dimensions") or []
     equivalents = assessment.get("controlled_equivalents_used") or []
     missing_core = assessment.get("missing_core_components") or item.get("missing_information") or []
+    missing_preferred = assessment.get("missing_preferred_components") or []
+    missing_dimensions = assessment.get("missing_evaluation_dimensions") or []
+    source_adjacent = assessment.get("source_declared_adjacent_components") or []
+    inferred_adjacent = assessment.get("inferred_adjacent_components") or []
     if supported_core:
         parts.append("core: " + ", ".join(supported_core[:5]))
+    if supported_preferred:
+        parts.append("preferred: " + ", ".join(supported_preferred[:5]))
     if equivalents:
         parts.append("controlled equivalent: " + ", ".join(equivalents[:5]))
     if supported_adjacent:
         parts.append("adjacent: " + ", ".join(supported_adjacent[:5]))
+    if source_adjacent:
+        parts.append("source adjacent considered: " + ", ".join(source_adjacent[:5]))
+    if inferred_adjacent:
+        parts.append("inferred adjacent: " + ", ".join(inferred_adjacent[:5]))
+    if supported_dimensions:
+        parts.append("dimensions: " + ", ".join(supported_dimensions[:5]))
     if missing_core:
         parts.append("missing core: " + ", ".join(missing_core[:5]))
+    if missing_preferred:
+        parts.append("missing preferred: " + ", ".join(missing_preferred[:5]))
+    if missing_dimensions:
+        parts.append("unverified dimensions: " + ", ".join(missing_dimensions[:5]))
     return "<br>".join(parts) or "No in-scope components matched."
 
 

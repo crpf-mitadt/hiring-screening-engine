@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date
 import hashlib
 import json
+import re
 from uuid import uuid4
 
 from chandra_eval.scoring.eligibility import evaluate_eligibility
@@ -154,16 +155,11 @@ def _score_criterion(
     index = build_candidate_evidence_index(candidate)
     verification_needed = list(criterion.accepted_evidence)
 
-    if criterion.evaluation_dimensions and criterion.category in {
-        RequirementCategory.SKILL,
-        RequirementCategory.LEADERSHIP,
-        RequirementCategory.RESPONSIBILITY,
-        RequirementCategory.OTHER,
-    }:
-        return _score_soft_skill_criterion(criterion, index, verification_needed)
-
     if criterion.category == RequirementCategory.EXPERIENCE and (
-        criterion.required_skill_names or criterion.preferred_skill_names or criterion.adjacent_skill_names
+        criterion.required_skill_names
+        or criterion.preferred_skill_names
+        or criterion.adjacent_skill_names
+        or criterion.evaluation_dimensions
     ):
         return _score_mixed_experience_skill_criterion(
             criterion,
@@ -288,7 +284,20 @@ def _score_criterion(
             ),
         )
 
-    if criterion.category == RequirementCategory.SKILL or criterion.required_skill_names or criterion.preferred_skill_names or criterion.adjacent_skill_names:
+    if (
+        criterion.category
+        in {
+            RequirementCategory.SKILL,
+            RequirementCategory.LEADERSHIP,
+            RequirementCategory.RESPONSIBILITY,
+            RequirementCategory.OTHER,
+        }
+        or criterion.required_skill_names
+        or criterion.preferred_skill_names
+        or criterion.adjacent_skill_names
+        or criterion.evaluation_dimensions
+        or criterion.requirement_ids
+    ):
         return _score_skill_criterion(
             criterion,
             candidate,
@@ -442,9 +451,6 @@ def _score_skill_criterion(
     index: list[EvidenceText],
     verification_needed: list[str],
 ) -> CriterionEvaluation:
-    if criterion.evaluation_dimensions:
-        return _score_soft_skill_criterion(criterion, index, verification_needed)
-
     components = _criterion_components(criterion, jd, eligibility, index)
     return _criterion_from_components(
         criterion,
@@ -551,41 +557,6 @@ def _experience_component_source(criterion: ScoringCriterion) -> str:
     return "criterion description fallback"
 
 
-def _score_soft_skill_criterion(
-    criterion: ScoringCriterion,
-    index: list[EvidenceText],
-    verification_needed: list[str],
-) -> CriterionEvaluation:
-    components = [_match_soft_skill_dimension(dimension, index) for dimension in criterion.evaluation_dimensions]
-    supported = [item for item in components if item.matched]
-    missing = [item.term for item in components if not item.matched]
-    evidence = _dedupe_evidence([evidence for item in supported for evidence in item.evidence])
-    fraction = discrete_match_fraction(len(supported) / len(components)) if components else 0.0
-    explanation = _component_explanation(components)
-    return CriterionEvaluation(
-        criterion_id=criterion.criterion_id,
-        criterion_name=criterion.name,
-        category=criterion.category.value,
-        weight=criterion.weight,
-        requirement_ids=criterion.requirement_ids,
-        match_fraction=fraction,
-        weighted_score=round(criterion.weight * fraction, 6),
-        status=_status(fraction, has_terms=bool(components)),
-        explanation=explanation,
-        evidence=evidence,
-        missing_information=missing,
-        ambiguity=[],
-        verification_needed=verification_needed,
-        candidate_requirement=criterion.description,
-        evidence_found=_evidence_found(evidence),
-        component_assessment=_component_assessment(
-            criterion,
-            components=components,
-            evidence=evidence,
-        ),
-    )
-
-
 def _criterion_components(
     criterion: ScoringCriterion,
     jd: StructuredJD,
@@ -607,7 +578,8 @@ def _criterion_components(
         include_linked_experience=include_linked_experience,
     )
     components.extend(_adjacent_components(criterion, components, index))
-    return components
+    components.extend(_dimension_components(criterion, index))
+    return _dedupe_components(components)
 
 
 def _owned_components(
@@ -647,7 +619,7 @@ def _owned_components(
             ComponentEvaluation(term=term, source="preferred_skills", component_class=CLASS_PREFERRED)
             for term in jd.preferred_skills
         )
-    if not components:
+    if not components and not criterion.adjacent_skill_names and not criterion.evaluation_dimensions:
         components.append(
             ComponentEvaluation(
                 term=criterion.description or criterion.name,
@@ -662,7 +634,20 @@ def _linked_requirement_component_terms(description: str) -> list[str]:
     normalized = normalize_token(description)
     if "database" in normalized or "mysql" in normalized or "postgres" in normalized or "sql" in normalized:
         return ["SQL/database management"]
-    return [description]
+    return _simple_requirement_skill_terms(description) or [description]
+
+
+def _simple_requirement_skill_terms(description: str) -> list[str]:
+    patterns = (
+        r"^\s*required\s*:\s*(.+?)\s*[.;]?\s*$",
+        r"^\s*(.+?)\s+is\s+(?:required|mandatory|essential)\s*[.;]?\s*$",
+        r"^\s*(?:must\s+(?:know|have|use|support)|requires?)\s+(.+?)\s*[.;]?\s*$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, description, flags=re.IGNORECASE)
+        if match:
+            return _dedupe_terms([match.group(1).strip()])
+    return []
 
 
 def _requirement_represented(description: str, terms: list[str]) -> bool:
@@ -742,45 +727,61 @@ def _adjacent_components(
     core_components: list[ComponentEvaluation],
     index: list[EvidenceText],
 ) -> list[ComponentEvaluation]:
-    if not _allows_full_stack_adjacent(criterion):
-        return _git_related_adjacent_components(criterion, index)
     core_terms = [component.term for component in core_components]
     output: list[ComponentEvaluation] = []
     source_declared = _dedupe_terms(criterion.adjacent_skill_names)
-    inferred = _dedupe_terms(
-        [
-            term
-            for term in _ADJACENT_FULL_STACK_TERMS
-            if not any(_same_or_related_term(term, core_term) for core_term in core_terms)
-            and not any(_same_or_related_term(term, adjacent_term) for adjacent_term in source_declared)
-        ]
-    )
-    for term, source in [
-        *[(term, "adjacent_skill_names") for term in source_declared],
-        *[(term, "adjacent-skill rule v1: full-stack-transferable") for term in inferred],
-    ]:
+    for term in source_declared:
         match = match_terms([term], index)
-        if match.evidence:
-            output.append(
-                ComponentEvaluation(
-                    term=term,
-                    source=source,
-                    component_class=CLASS_ADJACENT,
-                    matched=True,
-                    evidence=match.evidence,
-                    note=f"{term} recognized as adjacent full-stack evidence, not a mandatory substitute",
-                )
+        output.append(
+            ComponentEvaluation(
+                term=term,
+                source="adjacent_skill_names",
+                component_class=CLASS_ADJACENT,
+                matched=bool(match.evidence),
+                evidence=match.evidence,
+                note=(
+                    f"{term} recognized as source-declared adjacent evidence, not a mandatory substitute"
+                    if match.evidence
+                    else ""
+                ),
             )
+        )
+    if _allows_full_stack_adjacent(criterion):
+        inferred = _dedupe_terms(
+            [
+                term
+                for term in _ADJACENT_FULL_STACK_TERMS
+                if not any(_same_or_related_term(term, core_term) for core_term in core_terms)
+                and not any(_same_or_related_term(term, adjacent_term) for adjacent_term in source_declared)
+            ]
+        )
+        for term in inferred:
+            match = match_terms([term], index)
+            if match.evidence:
+                output.append(
+                    ComponentEvaluation(
+                        term=term,
+                        source="adjacent-skill rule v1: full-stack-transferable",
+                        component_class=CLASS_ADJACENT,
+                        matched=True,
+                        evidence=match.evidence,
+                        note=f"{term} recognized as inferred adjacent full-stack evidence, not a mandatory substitute",
+                    )
+                )
     output.extend(_git_related_adjacent_components(criterion, index))
     return _dedupe_components(output)
+
+
+def _dimension_components(criterion: ScoringCriterion, index: list[EvidenceText]) -> list[ComponentEvaluation]:
+    return [_match_soft_skill_dimension(dimension, index) for dimension in criterion.evaluation_dimensions]
 
 
 def _git_related_adjacent_components(criterion: ScoringCriterion, index: list[EvidenceText]) -> list[ComponentEvaluation]:
     preferred_hosts = {normalize_token(term) for term in criterion.preferred_skill_names if normalize_token(term) in {"github", "gitlab"}}
     if not preferred_hosts:
         return []
-    match = match_terms(["Git"], index)
-    if not match.evidence:
+    evidence = _plain_git_evidence(index)
+    if not evidence:
         return []
     return [
         ComponentEvaluation(
@@ -788,10 +789,32 @@ def _git_related_adjacent_components(criterion: ScoringCriterion, index: list[Ev
             source="adjacent-skill rule v1: git-hosting-related",
             component_class=CLASS_ADJACENT,
             matched=True,
-            evidence=match.evidence,
+            evidence=evidence,
             note="Plain Git is related evidence for Git hosting tools, not an exact GitHub or GitLab match.",
         )
     ]
+
+
+def _plain_git_evidence(index: list[EvidenceText]) -> list[EvidenceRef]:
+    evidence: list[EvidenceRef] = []
+    for item in index:
+        if _contains_phrase(item.normalized, "git") and not (
+            _contains_phrase(item.normalized, "github") or _contains_phrase(item.normalized, "gitlab")
+        ):
+            evidence.extend(
+                evidence_item.model_copy(
+                    update={
+                        "evidence_status": EvidenceStatus.PARTIALLY_SUPPORTED,
+                        "notes": (
+                            f"{evidence_item.notes}; Plain Git is adjacent/related evidence, not exact GitHub/GitLab"
+                            if evidence_item.notes
+                            else "Plain Git is adjacent/related evidence, not exact GitHub/GitLab"
+                        ),
+                    }
+                )
+                for evidence_item in item.evidence
+            )
+    return _dedupe_evidence(evidence)
 
 
 def _match_soft_skill_dimension(dimension: str, index: list[EvidenceText]) -> ComponentEvaluation:
@@ -895,6 +918,7 @@ def _component_assessment(
         "category": criterion.category.value,
         "weight": criterion.weight,
         "requirement_ids": list(criterion.requirement_ids),
+        "represented_requirement_ids": list(criterion.requirement_ids),
         "required_skill_names": list(criterion.required_skill_names),
         "preferred_skill_names": list(criterion.preferred_skill_names),
         "adjacent_skill_names": list(criterion.adjacent_skill_names),
@@ -1157,8 +1181,6 @@ def _same_or_related_term(left: str, right: str) -> bool:
 
 
 def _allows_full_stack_adjacent(criterion: ScoringCriterion) -> bool:
-    if criterion.adjacent_skill_names:
-        return True
     text = normalize_token(
         " ".join(
             [
@@ -1239,6 +1261,35 @@ def _validate_criterion_results(
 
 
 def _validate_component_runtime_invariants(evaluation: CriterionEvaluation) -> None:
+    assessment = evaluation.component_assessment
+    components = assessment.get("components", [])
+    _require_terms_represented(
+        assessment.get("required_skill_names", []),
+        components,
+        source="required_skill_names",
+        criterion_id=evaluation.criterion_id,
+    )
+    _require_terms_represented(
+        assessment.get("preferred_skill_names", []),
+        components,
+        source="preferred_skill_names",
+        criterion_id=evaluation.criterion_id,
+    )
+    _require_terms_represented(
+        assessment.get("adjacent_skill_names", []),
+        components,
+        source="adjacent_skill_names",
+        criterion_id=evaluation.criterion_id,
+    )
+    _require_terms_represented(
+        assessment.get("evaluation_dimensions", []),
+        components,
+        source="evaluation_dimensions",
+        criterion_id=evaluation.criterion_id,
+    )
+    for requirement_id in assessment.get("requirement_ids", []):
+        if requirement_id not in assessment.get("represented_requirement_ids", []):
+            raise ValueError(f"linked requirement {requirement_id} disappeared from {evaluation.criterion_id}")
     for component in evaluation.component_assessment.get("components", []):
         source = str(component.get("source", ""))
         classification = component.get("classification") or component.get("class")
@@ -1255,6 +1306,23 @@ def _validate_component_runtime_invariants(evaluation: CriterionEvaluation) -> N
                 notes = normalize_token(str(evidence.get("notes", "")))
                 if _contains_phrase(notes, "exact token phrase git"):
                     raise ValueError("Git evidence cannot be labelled an exact GitHub match")
+
+
+def _require_terms_represented(
+    terms: list[str],
+    components: list[dict],
+    *,
+    source: str,
+    criterion_id: str,
+) -> None:
+    represented = {
+        normalize_token(str(component.get("term", "")))
+        for component in components
+        if source in str(component.get("source", ""))
+    }
+    missing = [term for term in terms if normalize_token(term) not in represented]
+    if missing:
+        raise ValueError(f"{source} terms disappeared from {criterion_id}: {', '.join(missing)}")
 
 
 def _validate_linked_experience_consistency(

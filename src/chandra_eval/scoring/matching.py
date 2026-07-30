@@ -385,10 +385,26 @@ def _requirement_terms(description: str, equivalents: list[str]) -> list[str]:
     database_terms = _database_requirement_terms(description)
     if database_terms:
         return _dedupe_terms([*database_terms, *equivalents])
+    simple_skill_terms = _simple_requirement_skill_terms(description)
+    if simple_skill_terms:
+        return _dedupe_terms([*simple_skill_terms, *equivalents])
     normalized = normalize_token(description)
     if "database" in normalized and not database_terms:
         return _dedupe_terms([description, *equivalents])
     return _dedupe_terms([description, *equivalents, *_important_phrases(description)])
+
+
+def _simple_requirement_skill_terms(description: str) -> list[str]:
+    patterns = (
+        r"^\s*required\s*:\s*(.+?)\s*[.;]?\s*$",
+        r"^\s*(.+?)\s+is\s+(?:required|mandatory|essential)\s*[.;]?\s*$",
+        r"^\s*(?:must\s+(?:know|have|use|support)|requires?)\s+(.+?)\s*[.;]?\s*$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, description, flags=re.IGNORECASE)
+        if match:
+            return _dedupe_terms([match.group(1).strip()])
+    return []
 
 
 def _database_requirement_terms(description: str) -> list[str]:
