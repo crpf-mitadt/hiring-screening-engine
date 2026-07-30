@@ -103,6 +103,10 @@ _SOFT_SKILL_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_TECHNICAL_DIMENSION_RULES: dict[str, tuple[str, ...]] = {
+    "tech_stack_versatility": ("React.js", "Node.js", "Express.js"),
+}
+
 
 @dataclass
 class ComponentEvaluation:
@@ -112,6 +116,7 @@ class ComponentEvaluation:
     matched: bool = False
     evidence: list[EvidenceRef] = field(default_factory=list)
     note: str = ""
+    shared_evidence_with: list[str] = field(default_factory=list)
 
 
 def discrete_match_fraction(value: float) -> float:
@@ -540,7 +545,16 @@ def _score_mixed_experience_skill_criterion(
                 note=qualification.explanation,
             )
         )
-    components.extend(_criterion_components(criterion, jd, eligibility, index, include_linked_experience=False))
+    components.extend(
+        _criterion_components(
+            criterion,
+            jd,
+            eligibility,
+            index,
+            include_linked_experience=False,
+            existing_components=components,
+        )
+    )
     return _criterion_from_components(
         criterion,
         components,
@@ -564,6 +578,7 @@ def _criterion_components(
     index: list[EvidenceText],
     *,
     include_linked_experience: bool = True,
+    existing_components: list[ComponentEvaluation] | None = None,
 ) -> list[ComponentEvaluation]:
     components = _owned_components(criterion, jd, include_linked_experience=include_linked_experience)
     components = [
@@ -578,7 +593,7 @@ def _criterion_components(
         include_linked_experience=include_linked_experience,
     )
     components.extend(_adjacent_components(criterion, components, index))
-    components.extend(_dimension_components(criterion, index))
+    components.extend(_dimension_components(criterion, index, [*(existing_components or []), *components]))
     return _dedupe_components(components)
 
 
@@ -772,8 +787,109 @@ def _adjacent_components(
     return _dedupe_components(output)
 
 
-def _dimension_components(criterion: ScoringCriterion, index: list[EvidenceText]) -> list[ComponentEvaluation]:
-    return [_match_soft_skill_dimension(dimension, index) for dimension in criterion.evaluation_dimensions]
+def _dimension_components(
+    criterion: ScoringCriterion,
+    index: list[EvidenceText],
+    existing_components: list[ComponentEvaluation],
+) -> list[ComponentEvaluation]:
+    output: list[ComponentEvaluation] = []
+    for dimension in criterion.evaluation_dimensions:
+        shared = _shared_dimension_component(dimension, criterion, existing_components)
+        if shared is not None:
+            output.append(shared)
+            continue
+        technical = _match_technical_dimension(dimension, criterion, index)
+        if technical is not None:
+            output.append(technical)
+            continue
+        output.append(_match_soft_skill_dimension(dimension, index))
+    return output
+
+
+def _shared_dimension_component(
+    dimension: str,
+    criterion: ScoringCriterion,
+    components: list[ComponentEvaluation],
+) -> ComponentEvaluation | None:
+    normalized = normalize_token(dimension)
+    if _is_experience_dimension(normalized):
+        for component in components:
+            if component.matched and component.evidence and _is_experience_component(component):
+                return _shared_component_from(
+                    dimension,
+                    component,
+                    note=(
+                        f"Shared linked experience evidence with '{component.term}' because it already "
+                        "satisfies the equivalent years-of-experience dimension."
+                    ),
+                )
+    if _is_communication_dimension(normalized):
+        for component in components:
+            if (
+                component.matched
+                and component.evidence
+                and _component_related_to_requirement(component.term, dimension)
+            ):
+                return _shared_component_from(
+                    dimension,
+                    component,
+                    note=(
+                        f"Shared evidence with '{component.term}' because the same source text satisfies "
+                        "the linked communication component and evaluation dimension."
+                    ),
+                )
+    return None
+
+
+def _shared_component_from(dimension: str, component: ComponentEvaluation, *, note: str) -> ComponentEvaluation:
+    return ComponentEvaluation(
+        term=dimension,
+        source=f"evaluation_dimensions; shared evidence with {component.source}",
+        component_class=CLASS_EVALUATION_DIMENSION,
+        matched=True,
+        evidence=component.evidence,
+        note=note,
+        shared_evidence_with=[component.term],
+    )
+
+
+def _match_technical_dimension(
+    dimension: str,
+    criterion: ScoringCriterion,
+    index: list[EvidenceText],
+) -> ComponentEvaluation | None:
+    normalized = normalize_token(dimension)
+    if criterion.category != RequirementCategory.SKILL or not _is_tech_stack_versatility_dimension(normalized):
+        return None
+    matched_terms: list[str] = []
+    evidence: list[EvidenceRef] = []
+    for term in _TECHNICAL_DIMENSION_RULES["tech_stack_versatility"]:
+        match = match_terms([term], index)
+        if match.evidence:
+            matched_terms.append(term)
+            evidence.extend(match.evidence)
+    if len(matched_terms) >= 2:
+        return ComponentEvaluation(
+            term=dimension,
+            source="evaluation_dimensions; technical dimension rule v1: tech-stack-versatility",
+            component_class=CLASS_EVALUATION_DIMENSION,
+            matched=True,
+            evidence=_dedupe_evidence(evidence),
+            note=(
+                "Matched technical dimension using deterministic tech-stack-versatility mapping: "
+                + ", ".join(matched_terms)
+            ),
+        )
+    return ComponentEvaluation(
+        term=dimension,
+        source="evaluation_dimensions; technical dimension rule v1: tech-stack-versatility",
+        component_class=CLASS_EVALUATION_DIMENSION,
+        matched=False,
+        note=(
+            "Unverified technical dimension: deterministic tech-stack-versatility mapping requires at "
+            "least two of React.js, Node.js, and Express.js."
+        ),
+    )
 
 
 def _git_related_adjacent_components(criterion: ScoringCriterion, index: list[EvidenceText]) -> list[ComponentEvaluation]:
@@ -840,7 +956,18 @@ def _match_soft_skill_dimension(dimension: str, index: list[EvidenceText]) -> Co
                     evidence=evidence,
                     note=f"matched direct {dimension} evidence via trigger phrase '{pattern}'",
                 )
-    return ComponentEvaluation(term=dimension, source="evaluation_dimensions", component_class=CLASS_EVALUATION_DIMENSION)
+    note = ""
+    if _is_communication_dimension(normalized):
+        note = (
+            "Unverified communication dimension: no source text matched the stricter communication "
+            "dimension triggers, and no linked communication component supplied shareable evidence."
+        )
+    return ComponentEvaluation(
+        term=dimension,
+        source="evaluation_dimensions",
+        component_class=CLASS_EVALUATION_DIMENSION,
+        note=note,
+    )
 
 
 def _soft_skill_evidence(item: EvidenceText, pattern: str, dimension: str) -> list[EvidenceRef]:
@@ -950,6 +1077,7 @@ def _component_assessment(
                 "evidence": [evidence_item.model_dump(mode="json") for evidence_item in item.evidence],
                 "explanation": item.note,
                 "note": item.note,
+                "shared_evidence_with": list(item.shared_evidence_with),
             }
             for item in components
         ],
@@ -1111,22 +1239,48 @@ def _report_gaps(evaluations: list[CriterionEvaluation]) -> list[str]:
     seen: set[str] = set()
     for evaluation in evaluations:
         assessment = evaluation.component_assessment
-        for term in evaluation.missing_information:
-            _append_unique(gaps, seen, term)
         for term in assessment.get("missing_core_components", []) or []:
-            _append_unique(gaps, seen, f"mandatory/core gap: {evaluation.criterion_name}: {term}")
+            _append_unique(
+                gaps,
+                seen,
+                f"mandatory/core gap: {evaluation.criterion_name}: {term}",
+                semantic_key=f"core:{evaluation.criterion_id}:{term}",
+            )
         for term in assessment.get("missing_preferred_components", []) or []:
-            _append_unique(gaps, seen, f"preferred gap: {evaluation.criterion_name}: {term}")
+            _append_unique(
+                gaps,
+                seen,
+                f"preferred gap: {evaluation.criterion_name}: {term}",
+                semantic_key=f"preferred:{evaluation.criterion_id}:{term}",
+            )
         for term in assessment.get("missing_evaluation_dimensions", []) or []:
-            _append_unique(gaps, seen, f"unverified soft-skill dimension: {evaluation.criterion_name}: {term}")
+            prefix = _dimension_gap_prefix(evaluation.category)
+            _append_unique(
+                gaps,
+                seen,
+                f"{prefix}: {evaluation.criterion_name}: {term}",
+                semantic_key=f"dimension:{evaluation.criterion_id}:{term}",
+            )
     return gaps
 
 
-def _append_unique(output: list[str], seen: set[str], value: str) -> None:
+def _append_unique(output: list[str], seen: set[str], value: str, *, semantic_key: str | None = None) -> None:
     cleaned = value.strip()
-    if cleaned and cleaned not in seen:
-        seen.add(cleaned)
+    key = normalize_token(semantic_key or cleaned)
+    if cleaned and key not in seen:
+        seen.add(key)
         output.append(cleaned)
+
+
+def _dimension_gap_prefix(category: str | RequirementCategory) -> str:
+    value = category.value if isinstance(category, RequirementCategory) else str(category)
+    if value == RequirementCategory.SKILL.value:
+        return "unverified technical dimension"
+    if value == RequirementCategory.EXPERIENCE.value:
+        return "unverified experience dimension"
+    if value == RequirementCategory.LEADERSHIP.value:
+        return "unverified soft-skill dimension"
+    return "unverified evaluation dimension"
 
 
 def _source_criterion_hash(criterion: ScoringCriterion) -> str:
@@ -1178,6 +1332,31 @@ def _same_or_related_term(left: str, right: str) -> bool:
     left_norm = normalize_token(left)
     right_norm = normalize_token(right)
     return left_norm == right_norm or _contains_phrase(left_norm, right_norm) or _contains_phrase(right_norm, left_norm)
+
+
+def _is_experience_dimension(normalized: str) -> bool:
+    return (
+        (_contains_phrase(normalized, "year") or _contains_phrase(normalized, "duration"))
+        and _contains_phrase(normalized, "experience")
+    )
+
+
+def _is_experience_component(component: ComponentEvaluation) -> bool:
+    text = normalize_token(" ".join([component.term, component.source, component.note]))
+    return _contains_phrase(text, "experience") or _contains_phrase(text, "confirmed months")
+
+
+def _is_communication_dimension(normalized: str) -> bool:
+    return _contains_phrase(normalized, "communication")
+
+
+def _is_tech_stack_versatility_dimension(normalized: str) -> bool:
+    return (
+        _contains_phrase(normalized, "tech stack versatility")
+        or _contains_phrase(normalized, "technical versatility")
+        or (_contains_phrase(normalized, "versatility") and _contains_phrase(normalized, "stack"))
+        or (_contains_phrase(normalized, "technical breadth") and _contains_phrase(normalized, "technical"))
+    )
 
 
 def _allows_full_stack_adjacent(criterion: ScoringCriterion) -> bool:
@@ -1295,7 +1474,7 @@ def _validate_component_runtime_invariants(evaluation: CriterionEvaluation) -> N
         classification = component.get("classification") or component.get("class")
         if source == "preferred_skill_names" and classification != CLASS_PREFERRED:
             raise ValueError("source=preferred_skill_names implies class=preferred")
-        if source == "evaluation_dimensions" and classification != CLASS_EVALUATION_DIMENSION:
+        if source.startswith("evaluation_dimensions") and classification != CLASS_EVALUATION_DIMENSION:
             raise ValueError("source=evaluation_dimensions implies class=evaluation_dimension")
         if source.startswith("adjacent-skill rule") and classification != CLASS_ADJACENT:
             raise ValueError("source=adjacent-skill rule implies class=adjacent/transferable")

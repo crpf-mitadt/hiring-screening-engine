@@ -115,11 +115,11 @@ class CriterionEvaluation(StrictBaseModel):
                 raise ValueError("every matched component must have evidence")
             if source == "preferred_skill_names" and component_class != "preferred":
                 raise ValueError("source=preferred_skill_names implies class=preferred")
-            if source == "evaluation_dimensions" and component_class != "evaluation_dimension":
+            if str(source or "").startswith("evaluation_dimensions") and component_class != "evaluation_dimension":
                 raise ValueError("source=evaluation_dimensions implies class=evaluation_dimension")
             if str(source or "").startswith("adjacent-skill rule") and component_class != "adjacent/transferable":
                 raise ValueError("source=adjacent-skill rule implies class=adjacent/transferable")
-            if source not in {
+            if not str(source or "").startswith("evaluation_dimensions") and source not in {
                 "required_skill_names",
                 "preferred_skill_names",
                 "evaluation_dimensions",

@@ -812,8 +812,19 @@ def _summary_component_text(item: dict) -> str:
     if missing_preferred:
         parts.append("missing preferred: " + ", ".join(missing_preferred[:5]))
     if missing_dimensions:
-        parts.append("unverified dimensions: " + ", ".join(missing_dimensions[:5]))
+        label = _dimension_gap_label(str(assessment.get("category", "")))
+        parts.append(label + ": " + ", ".join(missing_dimensions[:5]))
     return "<br>".join(parts) or "No in-scope components matched."
+
+
+def _dimension_gap_label(category: str) -> str:
+    if category == "skill":
+        return "unverified technical dimension"
+    if category == "experience":
+        return "unverified experience dimension"
+    if category == "leadership":
+        return "unverified soft-skill dimension"
+    return "unverified evaluation dimension"
 
 
 def _print_terminal_summary(summary: dict, print_func: Callable[[str], None]) -> None:

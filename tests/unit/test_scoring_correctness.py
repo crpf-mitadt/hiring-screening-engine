@@ -1443,6 +1443,153 @@ class ScoringCorrectnessTests(unittest.TestCase):
                     if criterion.weighted_score > 0:
                         self.assertGreater(len(criterion.evidence), 0)
 
+    def test_dimension_gap_labels_are_category_aware(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Role",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="technical",
+                    name="Technical Dimension",
+                    category=RequirementCategory.SKILL,
+                    description="Security review",
+                    weight=50,
+                    evaluation_dimensions=["Security review"],
+                ),
+                ScoringCriterion(
+                    criterion_id="soft",
+                    name="Soft Dimension",
+                    category=RequirementCategory.LEADERSHIP,
+                    description="Empathy",
+                    weight=50,
+                    evaluation_dimensions=["Empathy"],
+                ),
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {"candidate_id": "candidate", "source_document_id": "resume"}
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+
+        self.assertIn("unverified technical dimension: Technical Dimension: Security review", report.gaps)
+        self.assertIn("unverified soft-skill dimension: Soft Dimension: Empathy", report.gaps)
+
+    def test_shared_experience_evidence_satisfies_years_of_experience_dimension(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_exp_01",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="experience",
+                    name="Experience",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Relevant years of experience.",
+                    weight=100,
+                    requirement_ids=["req_exp_01"],
+                    evaluation_dimensions=["Years of experience"],
+                )
+            ],
+        )
+        evidence = [
+            _evidence("Software Developer").model_dump(mode="json"),
+            _evidence("January 2023 - July 2025").model_dump(mode="json"),
+            _evidence("Delivered full-stack development with REST APIs.").model_dump(mode="json"),
+        ]
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "title": "Software Developer",
+                        "start_date": "2023-01",
+                        "end_date": "2025-07",
+                        "responsibilities": ["Delivered full-stack development with REST APIs."],
+                        "evidence": evidence,
+                    }
+                ],
+            }
+        )
+
+        criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+        dimension = next(
+            item for item in criterion.component_assessment["components"] if item["term"] == "Years of experience"
+        )
+
+        self.assertTrue(dimension["matched"])
+        self.assertEqual(dimension["shared_evidence_with"], ["Relevant experience duration/relevance"])
+        self.assertIn("Years of experience", criterion.component_assessment["supported_evaluation_dimensions"])
+        self.assertNotIn("Years of experience", criterion.component_assessment["missing_evaluation_dimensions"])
+        self.assertEqual(criterion.match_fraction, 1)
+
+    def test_supported_technical_breadth_satisfies_versatility_dimension(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="technical-breadth",
+                    name="Technical Breadth",
+                    category=RequirementCategory.SKILL,
+                    description="Modern JavaScript stack breadth.",
+                    weight=100,
+                    required_skill_names=["React.js", "Node.js", "Express.js"],
+                    evaluation_dimensions=["Tech stack versatility"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["React.js", "Node.js", "Express.js"],
+            }
+        )
+
+        criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+        dimension = next(
+            item for item in criterion.component_assessment["components"] if item["term"] == "Tech stack versatility"
+        )
+
+        self.assertTrue(dimension["matched"])
+        self.assertIn("technical dimension rule v1: tech-stack-versatility", dimension["source"])
+        self.assertIn("Tech stack versatility", criterion.component_assessment["supported_evaluation_dimensions"])
+        self.assertEqual(criterion.match_fraction, 1)
+
+    def test_report_gaps_use_one_structured_entry_per_missing_component(self) -> None:
+        jd = self._full_stack_jd()
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["MySQL", "JavaScript"],
+            }
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        normalized = [item.lower() for item in report.gaps]
+
+        self.assertIn("mandatory/core gap: Technical Stack Proficiency: PHP".lower(), normalized)
+        self.assertNotIn("php", normalized)
+        self.assertEqual(len(normalized), len(set(normalized)))
+        self.assertTrue(all(item.startswith(("mandatory/core gap:", "preferred gap:", "unverified ")) for item in report.gaps))
+
     def test_met_experience_requirement_uses_explanation_not_ambiguity(self) -> None:
         candidate = CandidateProfile.model_validate(
             {

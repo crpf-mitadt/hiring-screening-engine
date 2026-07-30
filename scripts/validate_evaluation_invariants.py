@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 from pathlib import Path
 from typing import Any
+
+CheckResult = tuple[str, bool | None, str]
 
 
 def main() -> int:
@@ -28,9 +31,9 @@ def main() -> int:
 
     failed = False
     for name, ok, detail in checks:
-        status = "PASS" if ok else "FAIL"
+        status = "SKIP" if ok is None else "PASS" if ok else "FAIL"
         print(f"{status}: {name}: {detail}")
-        failed = failed or not ok
+        failed = failed or ok is False
     return 1 if failed else 0
 
 
@@ -48,9 +51,9 @@ def _checks(
     ocr_metadata: dict[str, Any] | None,
     csv_report: Path | None,
     html_report: Path | None,
-) -> list[tuple[str, bool, str]]:
+) -> list[CheckResult]:
     criteria = evaluation.get("criterion_evaluations", [])
-    checks: list[tuple[str, bool, str]] = []
+    checks: list[CheckResult] = []
     checks.append(_source_rubric_preserved(criteria, jd))
     checks.append(_component_sources_represented(criteria))
     checks.append(_component_classes_correct(criteria))
@@ -62,6 +65,9 @@ def _checks(
     checks.append(_allowed_fractions_and_arithmetic(criteria))
     checks.append(_completeness_reconciles(evaluation))
     checks.append(_strengths_gaps_classified(evaluation))
+    checks.append(_dimension_labels_correct(evaluation))
+    checks.append(_semantic_dimension_duplicates(evaluation))
+    checks.append(_duplicate_gap_entries(evaluation))
     checks.append(_privacy_safe_resume(resume))
     checks.append(_raw_response_privacy(ocr_metadata))
     checks.append(_report_consistency(evaluation, csv_report, html_report))
@@ -70,7 +76,7 @@ def _checks(
 
 def _source_rubric_preserved(criteria: list[dict], jd: dict[str, Any] | None) -> tuple[str, bool, str]:
     if jd is None:
-        return "source rubric preservation", True, "structured JD not supplied; skipped"
+        return "source rubric preservation", None, "structured JD not supplied"
     source = {item["criterion_id"]: item for item in jd.get("scoring_rubric", [])}
     result = {item["criterion_id"]: item for item in criteria}
     if set(source) != set(result):
@@ -218,17 +224,93 @@ def _strengths_gaps_classified(evaluation: dict[str, Any]) -> tuple[str, bool, s
     strengths = evaluation.get("strengths", [])
     gaps = evaluation.get("gaps", [])
     allowed_strength_prefixes = ("required/core:", "preferred:", "adjacent:")
-    allowed_gap_prefixes = ("mandatory/core gap:", "preferred gap:", "unverified soft-skill dimension:")
+    allowed_gap_prefixes = (
+        "mandatory/core gap:",
+        "preferred gap:",
+        "unverified technical dimension:",
+        "unverified experience dimension:",
+        "unverified soft-skill dimension:",
+        "unverified evaluation dimension:",
+    )
     if any(":" in item and not item.startswith(allowed_strength_prefixes) for item in strengths):
         return "strengths/gaps classification", False, "unexpected structured strength prefix"
-    if any("gap:" in item and not item.startswith(allowed_gap_prefixes) for item in gaps):
+    if any(":" in item and not item.startswith(allowed_gap_prefixes) for item in gaps):
         return "strengths/gaps classification", False, "unexpected gap prefix"
     return "strengths/gaps classification", True, "strengths and gaps use structured classes"
 
 
+def _dimension_labels_correct(evaluation: dict[str, Any]) -> tuple[str, bool, str]:
+    criteria_by_name = {item.get("criterion_name"): item for item in evaluation.get("criterion_evaluations", [])}
+    for gap in evaluation.get("gaps", []):
+        if not gap.startswith("unverified ") or " dimension:" not in gap:
+            continue
+        parts = gap.split(": ", 2)
+        if len(parts) != 3:
+            return "dimension label correctness", False, f"malformed dimension gap: {gap}"
+        prefix, criterion_name, _term = parts
+        criterion = criteria_by_name.get(criterion_name)
+        if criterion is None:
+            return "dimension label correctness", False, f"dimension gap references unknown criterion {criterion_name}"
+        expected = _expected_dimension_prefix(str(criterion.get("category", "")))
+        if prefix != expected:
+            return "dimension label correctness", False, f"{criterion_name} uses '{prefix}', expected '{expected}'"
+    return "dimension label correctness", True, "dimension gaps use category-aware labels"
+
+
+def _semantic_dimension_duplicates(evaluation: dict[str, Any]) -> tuple[str, bool, str]:
+    for criterion in evaluation.get("criterion_evaluations", []):
+        assessment = criterion.get("component_assessment") or {}
+        components = assessment.get("components", [])
+        for component in components:
+            if (component.get("classification") or component.get("class")) != "evaluation_dimension":
+                continue
+            if component.get("matched"):
+                continue
+            term = str(component.get("term", ""))
+            term_norm = _normalize(term)
+            if _is_experience_dimension(term_norm) and _has_supported_experience_component(components):
+                return (
+                    "semantic dimension duplicates",
+                    False,
+                    f"{criterion['criterion_id']} leaves equivalent experience dimension '{term}' unverified",
+                )
+            if _is_tech_stack_versatility_dimension(term_norm) and _supported_tech_stack_terms(components) >= 2:
+                return (
+                    "semantic dimension duplicates",
+                    False,
+                    f"{criterion['criterion_id']} leaves equivalent tech-stack versatility dimension '{term}' unverified",
+                )
+            if _is_communication_dimension(term_norm) and _has_supported_communication_component(components):
+                note = _normalize(str(component.get("note") or component.get("explanation") or ""))
+                if "stricter communication dimension" not in note:
+                    return (
+                        "semantic dimension duplicates",
+                        False,
+                        f"{criterion['criterion_id']} leaves communication dimension '{term}' unverified without stricter-dimension explanation",
+                    )
+    return "semantic dimension duplicates", True, "no unsupported dimension duplicates found"
+
+
+def _duplicate_gap_entries(evaluation: dict[str, Any]) -> tuple[str, bool, str]:
+    seen: set[tuple[str, str, str]] = set()
+    for gap in evaluation.get("gaps", []):
+        parsed = _parse_gap(gap)
+        key = (parsed["kind"], _normalize(parsed["criterion"]), _normalize(parsed["term"]))
+        if key in seen:
+            return "duplicate gap entries", False, f"duplicate gap entry for {parsed['criterion']}: {parsed['term']}"
+        seen.add(key)
+        if parsed["kind"] == "raw":
+            structured_term = _normalize(parsed["term"])
+            for other in evaluation.get("gaps", []):
+                other_parsed = _parse_gap(other)
+                if other_parsed["kind"] != "raw" and _normalize(other_parsed["term"]) == structured_term:
+                    return "duplicate gap entries", False, f"raw and structured gap both mention {parsed['term']}"
+    return "duplicate gap entries", True, "gap entries are semantically unique"
+
+
 def _privacy_safe_resume(resume: dict[str, Any] | None) -> tuple[str, bool, str]:
     if resume is None:
-        return "scoring-safe privacy", True, "structured resume not supplied; skipped"
+        return "scoring-safe privacy", None, "structured resume not supplied"
     scoring = resume.get("scoring_safe_profile") or {}
     prohibited = {"personal_information", "name", "email", "phone", "address", "photo"}
     leaked = prohibited & set(scoring)
@@ -239,29 +321,42 @@ def _privacy_safe_resume(resume: dict[str, Any] | None) -> tuple[str, bool, str]
 
 def _raw_response_privacy(ocr_metadata: dict[str, Any] | None) -> tuple[str, bool, str]:
     if ocr_metadata is None:
-        return "raw-response privacy", True, "OCR metadata not supplied; skipped"
+        return "raw-response privacy", None, "OCR metadata not supplied"
     if ocr_metadata.get("raw_responses_persisted"):
         return "raw-response privacy", False, "raw OCR responses persisted"
-    return "raw-response privacy", True, "raw OCR responses disabled"
+    leaked_keys = _find_raw_response_keys(ocr_metadata)
+    if leaked_keys:
+        return "raw-response privacy", False, f"OCR metadata contains raw response keys: {sorted(leaked_keys)}"
+    return "raw-response privacy", True, "OCR metadata checked; raw OCR responses disabled"
 
 
 def _report_consistency(evaluation: dict[str, Any], csv_report: Path | None, html_report: Path | None) -> tuple[str, bool, str]:
+    if csv_report is None and html_report is None:
+        return "report consistency", None, "report files not supplied"
     expected_terms = {
         component.get("term")
         for item in evaluation.get("criterion_evaluations", [])
         for component in (item.get("component_assessment") or {}).get("components", [])
         if component.get("matched")
     }
-    if csv_report and csv_report.is_file():
-        rows = list(csv.DictReader(csv_report.open(encoding="utf-8")))
+    checked: list[str] = []
+    if csv_report:
+        if not csv_report.is_file():
+            return "report consistency", False, f"CSV report not found: {csv_report}"
+        with csv_report.open(encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
         csv_text = " ".join(row.get("component_assessment", "") for row in rows)
         if not all(term in csv_text for term in expected_terms if term):
             return "report consistency", False, "CSV report is missing matched component terms"
-    if html_report and html_report.is_file():
+        checked.append("CSV")
+    if html_report:
+        if not html_report.is_file():
+            return "report consistency", False, f"HTML report not found: {html_report}"
         html_text = html_report.read_text(encoding="utf-8")
         if not all(term in html_text for term in expected_terms if term):
             return "report consistency", False, "HTML report is missing matched component terms"
-    return "report consistency", True, "supplied reports include matched component terms"
+        checked.append("HTML")
+    return "report consistency", True, f"checked {' and '.join(checked)} report consistency"
 
 
 def _evidence_key(item: dict[str, Any]) -> tuple:
@@ -272,6 +367,114 @@ def _evidence_key(item: dict[str, Any]) -> tuple:
         item.get("block_index"),
         item.get("normalized_text") or item.get("exact_text"),
     )
+
+
+def _normalize(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _expected_dimension_prefix(category: str) -> str:
+    if category == "skill":
+        return "unverified technical dimension"
+    if category == "experience":
+        return "unverified experience dimension"
+    if category == "leadership":
+        return "unverified soft-skill dimension"
+    return "unverified evaluation dimension"
+
+
+def _is_experience_dimension(normalized: str) -> bool:
+    return ("year" in normalized or "duration" in normalized) and "experience" in normalized
+
+
+def _is_tech_stack_versatility_dimension(normalized: str) -> bool:
+    return (
+        "tech stack versatility" in normalized
+        or "technical versatility" in normalized
+        or ("versatility" in normalized and "stack" in normalized)
+        or "technical breadth" in normalized
+    )
+
+
+def _is_communication_dimension(normalized: str) -> bool:
+    return "communication" in normalized
+
+
+def _has_supported_experience_component(components: list[dict]) -> bool:
+    for component in components:
+        if not component.get("matched") or not component.get("evidence"):
+            continue
+        text = _normalize(
+            " ".join(
+                [
+                    str(component.get("term", "")),
+                    str(component.get("source", "")),
+                    str(component.get("note", "")),
+                ]
+            )
+        )
+        if "experience" in text or "confirmed months" in text:
+            return True
+    return False
+
+
+def _supported_tech_stack_terms(components: list[dict]) -> int:
+    supported = set()
+    for component in components:
+        if not component.get("matched"):
+            continue
+        text = _normalize(
+            " ".join([str(component.get("term", "")), json.dumps(component.get("evidence", []))])
+        )
+        if "react" in text:
+            supported.add("react")
+        if "node" in text:
+            supported.add("node")
+        if "express" in text:
+            supported.add("express")
+    return len(supported)
+
+
+def _has_supported_communication_component(components: list[dict]) -> bool:
+    for component in components:
+        if not component.get("matched") or not component.get("evidence"):
+            continue
+        text = _normalize(
+            " ".join(
+                [
+                    str(component.get("term", "")),
+                    str(component.get("source", "")),
+                    str(component.get("note", "")),
+                ]
+            )
+        )
+        if "communication" in text:
+            return True
+    return False
+
+
+def _parse_gap(gap: str) -> dict[str, str]:
+    parts = gap.split(": ", 2)
+    if len(parts) == 3 and (
+        parts[0].endswith("gap")
+        or parts[0].startswith("unverified ")
+    ):
+        return {"kind": parts[0], "criterion": parts[1], "term": parts[2]}
+    return {"kind": "raw", "criterion": "", "term": gap}
+
+
+def _find_raw_response_keys(value: Any, *, path: str = "") -> set[str]:
+    raw_keys: set[str] = set()
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key in {"choices", "message", "content"}:
+                raw_keys.add(child_path)
+            raw_keys.update(_find_raw_response_keys(child, path=child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            raw_keys.update(_find_raw_response_keys(child, path=f"{path}[{index}]"))
+    return raw_keys
 
 
 if __name__ == "__main__":

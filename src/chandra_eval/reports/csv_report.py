@@ -59,6 +59,7 @@ def write_csv_report(report: CandidateEvaluationReport, path: Path) -> Path:
 
 def _component_summary(assessment: dict) -> str:
     parts: list[str] = []
+    dimension_gap_label = _dimension_gap_label(str(assessment.get("category", "")))
     for label, key in (
         ("required/core", "required_core_components"),
         ("core", "supported_core_components"),
@@ -72,9 +73,19 @@ def _component_summary(assessment: dict) -> str:
         ("evaluation dimensions", "supported_evaluation_dimensions"),
         ("missing core", "missing_core_components"),
         ("missing preferred", "missing_preferred_components"),
-        ("unverified dimensions", "missing_evaluation_dimensions"),
+        (dimension_gap_label, "missing_evaluation_dimensions"),
     ):
         values = assessment.get(key) or []
         if values:
             parts.append(f"{label}: {', '.join(values)}")
     return " | ".join(parts)
+
+
+def _dimension_gap_label(category: str) -> str:
+    if category == "skill":
+        return "unverified technical dimension"
+    if category == "experience":
+        return "unverified experience dimension"
+    if category == "leadership":
+        return "unverified soft-skill dimension"
+    return "unverified evaluation dimension"
