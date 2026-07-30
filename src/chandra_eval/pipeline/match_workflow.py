@@ -670,7 +670,7 @@ def _build_summary(
                 "candidate_requirement": item.candidate_requirement,
                 "missing_information": item.missing_information,
                 "ambiguity": item.ambiguity,
-                "component_assessment": item.model_assessment or {},
+                "component_assessment": item.component_assessment,
             }
             for item in report.criterion_evaluations
         ],

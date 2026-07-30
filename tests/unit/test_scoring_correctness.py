@@ -1,7 +1,11 @@
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from pydantic import ValidationError
 
+from chandra_eval.pipeline.candidate_evaluation import evaluate_candidate_files
 from chandra_eval.scoring.engine import evaluate_candidate
 from chandra_eval.scoring.evidence_completeness import evidence_completeness
 from chandra_eval.scoring.matching import build_candidate_evidence_index, match_terms
@@ -634,13 +638,13 @@ class ScoringCorrectnessTests(unittest.TestCase):
 
         self.assertEqual(db_requirement["status"], "met")
         self.assertEqual(technical.match_fraction, 0.5)
-        self.assertIn("SQL/database management", technical.model_assessment["supported_core_components"])
-        self.assertIn("JavaScript", technical.model_assessment["supported_adjacent_components"])
-        self.assertIn("PHP", technical.model_assessment["missing_core_components"])
-        self.assertIn("Laravel", technical.model_assessment["missing_core_components"])
-        self.assertIn("WordPress", technical.model_assessment["missing_core_components"])
+        self.assertIn("SQL/database management", technical.component_assessment["supported_core_components"])
+        self.assertIn("JavaScript", technical.component_assessment["supported_adjacent_components"])
+        self.assertIn("PHP", technical.component_assessment["missing_core_components"])
+        self.assertIn("Laravel", technical.component_assessment["missing_core_components"])
+        self.assertIn("WordPress", technical.component_assessment["missing_core_components"])
         self.assertIn("PostgreSQL/MySQL database operations", " ".join(technical.evidence_found))
-        self.assertNotIn("JavaScript", " ".join(technical.model_assessment["controlled_equivalents_used"]))
+        self.assertNotIn("JavaScript", " ".join(technical.component_assessment["supported_controlled_equivalents"]))
         self.assertEqual(
             len([item for item in technical.evidence if item.exact_text == db_text]),
             1,
@@ -661,8 +665,8 @@ class ScoringCorrectnessTests(unittest.TestCase):
 
         self.assertEqual(report.eligibility.requirement_statuses["req_tech_02"], "not_found")
         self.assertEqual(technical.match_fraction, 0.25)
-        self.assertEqual(technical.model_assessment["supported_core_components"], [])
-        self.assertIn("JavaScript", technical.model_assessment["supported_adjacent_components"])
+        self.assertEqual(technical.component_assessment["supported_core_components"], [])
+        self.assertIn("JavaScript", technical.component_assessment["supported_adjacent_components"])
         self.assertIn("PHP", technical.missing_information)
         self.assertIn("Laravel", technical.missing_information)
         self.assertIn("WordPress", technical.missing_information)
@@ -693,8 +697,9 @@ class ScoringCorrectnessTests(unittest.TestCase):
 
         self.assertNotIn("React.js", by_id["crit_03"].explanation)
         self.assertNotIn("JavaScript", by_id["crit_03"].explanation)
-        self.assertIn("Ownership", by_id["crit_03"].model_assessment["supported_core_components"])
-        self.assertIn("Proactivity", by_id["crit_03"].model_assessment["supported_core_components"])
+        self.assertEqual(by_id["crit_03"].category, "leadership")
+        self.assertIn("Ownership", by_id["crit_03"].component_assessment["supported_core_components"])
+        self.assertIn("Proactivity", by_id["crit_03"].component_assessment["supported_core_components"])
         self.assertEqual(by_id["crit_04"].match_fraction, 0)
         self.assertIn("DevOps", by_id["crit_04"].missing_information)
         self.assertIn("SEO", by_id["crit_04"].missing_information)
@@ -745,9 +750,97 @@ class ScoringCorrectnessTests(unittest.TestCase):
                 self.assertEqual(normal_by_id[criterion_id].match_fraction, shuffled_by_id[criterion_id].match_fraction)
                 self.assertEqual(normal_by_id[criterion_id].missing_information, shuffled_by_id[criterion_id].missing_information)
                 self.assertEqual(
-                    normal_by_id[criterion_id].model_assessment,
-                    shuffled_by_id[criterion_id].model_assessment,
+                    normal_by_id[criterion_id].component_assessment,
+                    shuffled_by_id[criterion_id].component_assessment,
                 )
+
+    def test_file_based_evaluation_preserves_source_rubric_fields(self) -> None:
+        db_text = "Optimized PostgreSQL/MySQL database operations for reliability and performance."
+        adjacent_text = "Built JavaScript, React.js, Node.js, Express.js, Vue.js and REST API features."
+        initiative_text = "Owned release planning and proactively improved deployment quality."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["JavaScript", "React.js", "Node.js", "Express.js", "Vue.js", "MySQL", "PostgreSQL"],
+                "experience": [
+                    {
+                        "title": "Software Developer I",
+                        "organization": "Synthetic Product Company",
+                        "start_date": "2024-01",
+                        "end_date": "Present",
+                        "responsibilities": [
+                            "Full-stack logistics systems with REST APIs.",
+                            db_text,
+                            adjacent_text,
+                            initiative_text,
+                        ],
+                        "evidence": [
+                            _evidence("Software Developer I").model_dump(mode="json"),
+                            _evidence("January 2024 - Present").model_dump(mode="json"),
+                            _evidence("Full-stack logistics systems with REST APIs.").model_dump(mode="json"),
+                            _evidence(db_text).model_dump(mode="json"),
+                            _evidence(adjacent_text).model_dump(mode="json"),
+                            _evidence(initiative_text).model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+        jd = self._full_stack_jd()
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate_path = root / "structured-resume.json"
+            jd_path = root / "structured-jd.json"
+            output_path = root / "evaluation.json"
+            candidate_path.write_text(json.dumps(candidate.model_dump(mode="json"), indent=2), encoding="utf-8")
+            jd_path.write_text(json.dumps(jd.model_dump(mode="json"), indent=2), encoding="utf-8")
+
+            report = evaluate_candidate_files(candidate_path, jd_path, output_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        source_by_id = {criterion.criterion_id: criterion for criterion in jd.scoring_rubric}
+        result_by_id = {item.criterion_id: item for item in report.criterion_evaluations}
+        json_by_id = {item["criterion_id"]: item for item in payload["criterion_evaluations"]}
+
+        self.assertEqual(set(result_by_id), set(source_by_id))
+        self.assertEqual(set(json_by_id), set(source_by_id))
+        for criterion_id, source in source_by_id.items():
+            with self.subTest(criterion_id=criterion_id):
+                result = result_by_id[criterion_id]
+                dumped = json_by_id[criterion_id]
+                self.assertEqual(result.criterion_name, source.name)
+                self.assertEqual(result.category, source.category.value)
+                self.assertEqual(result.weight, source.weight)
+                self.assertEqual(result.requirement_ids, source.requirement_ids)
+                self.assertEqual(result.component_assessment.get("required_skill_names"), source.required_skill_names)
+                self.assertEqual(result.component_assessment.get("preferred_skill_names"), source.preferred_skill_names)
+                self.assertEqual(result.component_assessment.get("evaluation_dimensions"), source.evaluation_dimensions)
+                self.assertEqual(dumped["criterion_name"], source.name)
+                self.assertEqual(dumped["category"], source.category.value)
+                self.assertEqual(dumped["weight"], source.weight)
+                self.assertEqual(dumped["requirement_ids"], source.requirement_ids)
+                if source.category.value in {"skill", "leadership"}:
+                    self.assertIsInstance(dumped["component_assessment"], dict)
+                    self.assertGreater(len(dumped["component_assessment"]["components"]), 0)
+
+        technical = result_by_id["crit_01"]
+        self.assertEqual(technical.requirement_ids, ["req_tech_01", "req_tech_02"])
+        self.assertIn("SQL/database management", technical.component_assessment["supported_core_components"])
+        self.assertIn("PostgreSQL", technical.component_assessment["supported_controlled_equivalents"])
+        self.assertIn("JavaScript", technical.component_assessment["supported_adjacent_components"])
+        self.assertNotIn("JavaScript", technical.component_assessment["supported_core_components"])
+        self.assertIn("PHP", technical.component_assessment["missing_core_components"])
+        self.assertIn("Laravel", technical.component_assessment["missing_core_components"])
+        self.assertIn("WordPress", technical.component_assessment["missing_core_components"])
+        self.assertEqual(result_by_id["crit_03"].criterion_name, "Soft Skills & Proactivity")
+        self.assertEqual(result_by_id["crit_03"].component_assessment["evaluation_dimensions"], ["Communication", "Ownership", "Proactivity"])
+        self.assertNotIn("React.js", str(result_by_id["crit_03"].component_assessment))
+        self.assertEqual(result_by_id["crit_04"].criterion_name, "Additional Technical Skills")
+        self.assertEqual(result_by_id["crit_04"].component_assessment["preferred_skill_names"], ["DevOps", "SEO", "UI/UX"])
+        self.assertNotIn("Proactive Problem Solving", str(result_by_id["crit_04"].model_dump()))
+        self.assertIn("Experience & Domain Fit", report.strengths)
 
     def test_met_experience_requirement_uses_explanation_not_ambiguity(self) -> None:
         candidate = CandidateProfile.model_validate(
@@ -921,6 +1014,13 @@ class ScoringCorrectnessTests(unittest.TestCase):
             minimum_experience_months=24,
             mandatory_requirements=[
                 JDRequirement(
+                    requirement_id="req_tech_01",
+                    category=RequirementCategory.SKILL,
+                    description="Experience with PHP, Laravel and WordPress.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                ),
+                JDRequirement(
                     requirement_id="req_tech_02",
                     category=RequirementCategory.SKILL,
                     description="Experience with MySQL or similar enterprise databases.",
@@ -944,7 +1044,7 @@ class ScoringCorrectnessTests(unittest.TestCase):
                     category=RequirementCategory.SKILL,
                     description="PHP; Laravel; WordPress; SQL/database management",
                     weight=40,
-                    requirement_ids=["req_tech_02"],
+                    requirement_ids=["req_tech_01", "req_tech_02"],
                     required_skill_names=["PHP", "Laravel", "WordPress", "SQL/database management"],
                 ),
                 ScoringCriterion(
@@ -958,7 +1058,7 @@ class ScoringCorrectnessTests(unittest.TestCase):
                 ScoringCriterion(
                     criterion_id="crit_03",
                     name="Soft Skills & Proactivity",
-                    category=RequirementCategory.SKILL,
+                    category=RequirementCategory.LEADERSHIP,
                     description="Communication, ownership, and proactivity",
                     weight=20,
                     evaluation_dimensions=["Communication", "Ownership", "Proactivity"],

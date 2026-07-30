@@ -55,6 +55,10 @@ Rubric criterion identity is field-owned, not position-owned: each result is bui
 structured JD criterion's `criterion_id`, `name`, `category`, `weight`, `requirement_ids`,
 `required_skill_names`, `preferred_skill_names`, and `evaluation_dimensions`. A linked requirement's
 validated evidence may flow only to criteria that list that `requirement_id`.
+File-based evaluation uses the loaded `StructuredJD` object directly. Existing non-empty
+`scoring_rubric` entries are not renamed, regenerated, reordered, or replaced by compatibility
+templates. Runtime validation compares each result with the source criterion, and component
+assessment metadata includes a stable hash of the source criterion definition.
 
 Technical-stack criteria distinguish:
 
@@ -68,6 +72,11 @@ Adjacent full-stack evidence can add at most one discrete scoring step and canno
 mandatory component. Adjacent-only evidence is capped at `0.25`; direct core evidence plus adjacent
 evidence may increase one step but remains capped at `0.75` while any core component is missing.
 Reports label these classes separately.
+The canonical structured field for this is `component_assessment`. It includes
+`required_core_components`, `controlled_equivalent_components`, `adjacent_components_considered`,
+`supported_core_components`, `supported_controlled_equivalents`, `supported_adjacent_components`,
+`missing_core_components`, per-component source/origin, per-component evidence references, and the
+source criterion hash. Skill and leadership criteria must populate this object.
 
 Soft-skill criteria use only their own `evaluation_dimensions`. Technical tools such as React.js,
 JavaScript, HTML, CSS, and databases do not directly satisfy communication, ownership, or

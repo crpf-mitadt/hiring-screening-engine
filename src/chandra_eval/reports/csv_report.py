@@ -47,7 +47,7 @@ def write_csv_report(report: CandidateEvaluationReport, path: Path) -> Path:
                     "match_fraction": item.match_fraction,
                     "weighted_score": item.weighted_score,
                     "explanation": item.explanation,
-                    "component_assessment": _component_summary(item.model_assessment or {}),
+                    "component_assessment": _component_summary(item.component_assessment),
                     "evidence_found": " | ".join(item.evidence_found),
                     "missing_information": " | ".join(item.missing_information),
                     "verification_needed": " | ".join(item.verification_needed),

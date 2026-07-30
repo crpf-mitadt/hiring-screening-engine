@@ -1,6 +1,8 @@
 """Deterministic candidate-to-JD scoring engine."""
 
 from dataclasses import dataclass, field
+import hashlib
+import json
 from uuid import uuid4
 
 from chandra_eval.scoring.eligibility import evaluate_eligibility
@@ -126,6 +128,14 @@ def _score_criterion(
     index = build_candidate_evidence_index(candidate)
     verification_needed = list(criterion.accepted_evidence)
 
+    if criterion.evaluation_dimensions and criterion.category in {
+        RequirementCategory.SKILL,
+        RequirementCategory.LEADERSHIP,
+        RequirementCategory.RESPONSIBILITY,
+        RequirementCategory.OTHER,
+    }:
+        return _score_soft_skill_criterion(criterion, index, verification_needed)
+
     if criterion.category == RequirementCategory.EXPERIENCE:
         required_months = jd.minimum_experience_months or _minimum_from_requirements(jd)
         if required_months:
@@ -158,6 +168,13 @@ def _score_criterion(
                 verification_needed=verification_needed,
                 candidate_requirement=criterion.description,
                 evidence_found=_evidence_found(evidence),
+                component_assessment=_single_component_assessment(
+                    criterion,
+                    term=criterion.description,
+                    source="linked requirement" if criterion.requirement_ids else "criterion description",
+                    matched=fraction > 0,
+                    evidence=evidence,
+                ),
             )
         else:
             match = match_qualitative_experience(criterion.description, index)
@@ -183,6 +200,13 @@ def _score_criterion(
                 verification_needed=verification_needed,
                 candidate_requirement=criterion.description,
                 evidence_found=_evidence_found(evidence),
+                component_assessment=_single_component_assessment(
+                    criterion,
+                    term=criterion.description,
+                    source="criterion description",
+                    matched=fraction > 0,
+                    evidence=evidence,
+                ),
             )
     if criterion.category == RequirementCategory.EDUCATION:
         education_match = evaluate_education_requirement(criterion.description, candidate.education)
@@ -210,6 +234,13 @@ def _score_criterion(
             verification_needed=verification_needed,
             candidate_requirement=criterion.description,
             evidence_found=_evidence_found(education_match.evidence),
+            component_assessment=_single_component_assessment(
+                criterion,
+                term=criterion.description,
+                source="criterion description",
+                matched=fraction > 0,
+                evidence=education_match.evidence,
+            ),
         )
 
     if criterion.category == RequirementCategory.SKILL:
@@ -248,6 +279,13 @@ def _score_criterion(
         verification_needed=verification_needed,
         candidate_requirement=criterion.description,
         evidence_found=_evidence_found(match.evidence),
+        component_assessment=_single_component_assessment(
+            criterion,
+            term=criterion.description,
+            source="criterion description",
+            matched=fraction > 0,
+            evidence=match.evidence,
+        ),
     )
 
 
@@ -388,7 +426,7 @@ def _score_skill_criterion(
         verification_needed=verification_needed,
         candidate_requirement=criterion.description,
         evidence_found=_evidence_found(evidence),
-        model_assessment=_component_assessment(
+        component_assessment=_component_assessment(
             criterion,
             core_components=core_components,
             adjacent_components=adjacent_components,
@@ -424,7 +462,7 @@ def _score_soft_skill_criterion(
         verification_needed=verification_needed,
         candidate_requirement=criterion.description,
         evidence_found=_evidence_found(evidence),
-        model_assessment=_component_assessment(
+        component_assessment=_component_assessment(
             criterion,
             core_components=components,
             adjacent_components=[],
@@ -579,23 +617,36 @@ def _match_soft_skill_dimension(dimension: str, index: list[EvidenceText]) -> Co
             continue
         for pattern in patterns:
             if _contains_phrase(item.normalized, normalize_token(pattern)):
+                evidence = _soft_skill_evidence(item, pattern, dimension)
                 return ComponentEvaluation(
                     term=dimension,
                     source="evaluation_dimensions",
                     component_class="required/core",
                     matched=True,
-                    evidence=[
-                        evidence.model_copy(
-                            update={
-                                "evidence_status": EvidenceStatus.SUPPORTED,
-                                "notes": f"{evidence.notes}; Matched soft-skill dimension '{dimension}'" if evidence.notes else f"Matched soft-skill dimension '{dimension}'",
-                            }
-                        )
-                        for evidence in item.evidence
-                    ],
+                    evidence=evidence,
                     note=f"matched direct {dimension} evidence",
                 )
     return ComponentEvaluation(term=dimension, source="evaluation_dimensions", component_class="required/core")
+
+
+def _soft_skill_evidence(item: EvidenceText, pattern: str, dimension: str) -> list[EvidenceRef]:
+    pattern_norm = normalize_token(pattern)
+    exact_norm = normalize_token(item.text)
+    supporting = [
+        evidence
+        for evidence in item.evidence
+        if normalize_token(evidence.normalized_text or evidence.exact_text) == exact_norm
+        or _contains_phrase(normalize_token(evidence.normalized_text or evidence.exact_text), pattern_norm)
+    ]
+    return [
+        evidence.model_copy(
+            update={
+                "evidence_status": EvidenceStatus.SUPPORTED,
+                "notes": f"{evidence.notes}; Matched soft-skill dimension '{dimension}'" if evidence.notes else f"Matched soft-skill dimension '{dimension}'",
+            }
+        )
+        for evidence in supporting
+    ]
 
 
 def _component_explanation(
@@ -639,6 +690,10 @@ def _component_assessment(
         "required_skill_names": list(criterion.required_skill_names),
         "preferred_skill_names": list(criterion.preferred_skill_names),
         "evaluation_dimensions": list(criterion.evaluation_dimensions),
+        "source_criterion_hash": _source_criterion_hash(criterion),
+        "required_core_components": [item.term for item in core_components if item.component_class == "required/core"],
+        "controlled_equivalent_components": [item.term for item in core_components if _is_database_component(item.term)],
+        "adjacent_components_considered": [item.term for item in adjacent_components],
         "components": [
             {
                 "term": item.term,
@@ -646,16 +701,62 @@ def _component_assessment(
                 "class": item.component_class,
                 "matched": item.matched,
                 "evidence_count": len(item.evidence),
+                "evidence": [evidence_item.model_dump(mode="json") for evidence_item in item.evidence],
                 "note": item.note,
             }
             for item in [*core_components, *adjacent_components]
         ],
         "supported_core_components": [item.term for item in core_components if item.matched],
+        "supported_required_components": [item.term for item in core_components if item.matched],
         "missing_core_components": [item.term for item in core_components if not item.matched],
         "supported_adjacent_components": [item.term for item in adjacent_components if item.matched],
+        "supported_controlled_equivalents": sorted(_controlled_equivalent_notes(evidence)),
         "controlled_equivalents_used": sorted(_controlled_equivalent_notes(evidence)),
         "evidence_scopes": ["in_scope" for _ in evidence],
     }
+
+
+def _single_component_assessment(
+    criterion: ScoringCriterion,
+    *,
+    term: str,
+    source: str,
+    matched: bool,
+    evidence: list[EvidenceRef],
+) -> dict:
+    return _component_assessment(
+        criterion,
+        core_components=[
+            ComponentEvaluation(
+                term=term,
+                source=source,
+                component_class=_core_class(criterion),
+                matched=matched,
+                evidence=evidence if matched else [],
+                note="criterion evaluated from source rubric definition",
+            )
+        ],
+        adjacent_components=[],
+        evidence=evidence if matched else [],
+    )
+
+
+def _source_criterion_hash(criterion: ScoringCriterion) -> str:
+    payload = {
+        "criterion_id": criterion.criterion_id,
+        "name": criterion.name,
+        "category": criterion.category.value,
+        "description": criterion.description,
+        "weight": criterion.weight,
+        "mandatory": criterion.mandatory,
+        "accepted_evidence": criterion.accepted_evidence,
+        "scoring_guidance": criterion.scoring_guidance,
+        "requirement_ids": criterion.requirement_ids,
+        "required_skill_names": criterion.required_skill_names,
+        "preferred_skill_names": criterion.preferred_skill_names,
+        "evaluation_dimensions": criterion.evaluation_dimensions,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _core_class(criterion: ScoringCriterion) -> str:

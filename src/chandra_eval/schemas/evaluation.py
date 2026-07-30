@@ -41,7 +41,8 @@ class CriterionEvaluation(StrictBaseModel):
     verification_needed: list[str] = Field(default_factory=list)
     candidate_requirement: str = ""
     evidence_found: list[str] = Field(default_factory=list)
-    model_assessment: dict[str, Any] | None = None
+    component_assessment: dict[str, Any] = Field(default_factory=dict)
+    model_assessment: dict[str, Any] | None = Field(default=None, exclude=True)
 
     @field_validator("match_fraction")
     @classmethod
@@ -54,10 +55,16 @@ class CriterionEvaluation(StrictBaseModel):
 
     @model_validator(mode="after")
     def _positive_score_requires_evidence(self) -> "CriterionEvaluation":
+        if self.model_assessment and not self.component_assessment:
+            self.component_assessment = self.model_assessment
+        if self.component_assessment and self.model_assessment is None:
+            self.model_assessment = self.component_assessment
+        if self.category in {"skill", "leadership"} and not self.component_assessment:
+            raise ValueError("skill and leadership criteria require populated component_assessment")
         if self.weighted_score > 0 and not self.evidence:
             raise ValueError("weighted_score > 0 requires at least one valid evidence item")
-        if self.weighted_score > 0 and self.model_assessment:
-            scopes = self.model_assessment.get("evidence_scopes", [])
+        if self.weighted_score > 0 and self.component_assessment:
+            scopes = self.component_assessment.get("evidence_scopes", [])
             if scopes and not any(scope == "in_scope" for scope in scopes):
                 raise ValueError("weighted_score > 0 requires in-scope criterion evidence")
         return self

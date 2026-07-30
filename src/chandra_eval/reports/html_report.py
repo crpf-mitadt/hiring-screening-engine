@@ -18,7 +18,7 @@ def write_html_report(report: CandidateEvaluationReport, path: Path) -> Path:
         f"<td>{item.match_fraction:.3f}</td>"
         f"<td>{item.weighted_score:.3f}</td>"
         f"<td>{escape(item.explanation)}</td>"
-        f"<td>{escape(_component_summary(item.model_assessment or {}))}</td>"
+        f"<td>{escape(_component_summary(item.component_assessment))}</td>"
         f"<td>{escape('; '.join(item.evidence_found) or 'No direct evidence recorded.')}</td>"
         f"<td>{escape('; '.join(item.verification_needed) or 'None')}</td>"
         "</tr>"

@@ -55,7 +55,7 @@ def evidence_completeness_diagnostics(
                     evidence.normalized_text or evidence.exact_text,
                 )
             )
-        components = (evaluation.model_assessment or {}).get("components", [])
+        components = evaluation.component_assessment.get("components", [])
         for component in components:
             component_class = component.get("class", "")
             if component_class in {"required/core", "preferred/core"}:
