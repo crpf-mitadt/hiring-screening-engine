@@ -7,6 +7,14 @@ import json
 import re
 from uuid import uuid4
 
+from chandra_eval.scoring.dimensions import (
+    TECH_STACK_BREADTH_THRESHOLD,
+    canonical_technical_breadth_term,
+    dimension_domain,
+    dimension_gap_label,
+    is_experience_dimension,
+    is_tech_stack_versatility_dimension,
+)
 from chandra_eval.scoring.eligibility import evaluate_eligibility
 from chandra_eval.scoring.education import evaluate_education_requirement
 from chandra_eval.scoring.evidence_completeness import evidence_completeness, evidence_completeness_diagnostics
@@ -102,11 +110,6 @@ _SOFT_SKILL_PATTERNS: dict[str, tuple[str, ...]] = {
         "fixed",
     ),
 }
-
-_TECHNICAL_DIMENSION_RULES: dict[str, tuple[str, ...]] = {
-    "tech_stack_versatility": ("React.js", "Node.js", "Express.js"),
-}
-
 
 @dataclass
 class ComponentEvaluation:
@@ -798,7 +801,7 @@ def _dimension_components(
         if shared is not None:
             output.append(shared)
             continue
-        technical = _match_technical_dimension(dimension, criterion, index)
+        technical = _match_technical_dimension(dimension, existing_components)
         if technical is not None:
             output.append(technical)
             continue
@@ -812,7 +815,7 @@ def _shared_dimension_component(
     components: list[ComponentEvaluation],
 ) -> ComponentEvaluation | None:
     normalized = normalize_token(dimension)
-    if _is_experience_dimension(normalized):
+    if is_experience_dimension(normalized):
         for component in components:
             if component.matched and component.evidence and _is_experience_component(component):
                 return _shared_component_from(
@@ -855,30 +858,32 @@ def _shared_component_from(dimension: str, component: ComponentEvaluation, *, no
 
 def _match_technical_dimension(
     dimension: str,
-    criterion: ScoringCriterion,
-    index: list[EvidenceText],
+    components: list[ComponentEvaluation],
 ) -> ComponentEvaluation | None:
     normalized = normalize_token(dimension)
-    if criterion.category != RequirementCategory.SKILL or not _is_tech_stack_versatility_dimension(normalized):
+    if not is_tech_stack_versatility_dimension(normalized):
         return None
-    matched_terms: list[str] = []
-    evidence: list[EvidenceRef] = []
-    for term in _TECHNICAL_DIMENSION_RULES["tech_stack_versatility"]:
-        match = match_terms([term], index)
-        if match.evidence:
-            matched_terms.append(term)
-            evidence.extend(match.evidence)
-    if len(matched_terms) >= 2:
+    breadth_components = _supported_technical_breadth_components(components)
+    if len({canonical for canonical, _component in breadth_components}) >= TECH_STACK_BREADTH_THRESHOLD:
+        component_terms = [component.term for _canonical, component in breadth_components]
+        evidence = _dedupe_evidence(
+            evidence_item
+            for _canonical, component in breadth_components
+            for evidence_item in component.evidence
+        )
         return ComponentEvaluation(
             term=dimension,
-            source="evaluation_dimensions; technical dimension rule v1: tech-stack-versatility",
+            source="evaluation_dimensions; shared evidence with supported technical components; technical dimension rule v1: tech-stack-versatility",
             component_class=CLASS_EVALUATION_DIMENSION,
             matched=True,
-            evidence=_dedupe_evidence(evidence),
+            evidence=evidence,
             note=(
-                "Matched technical dimension using deterministic tech-stack-versatility mapping: "
-                + ", ".join(matched_terms)
+                "Matched tech-stack versatility by reusing evidence from multiple supported technical "
+                f"components ({', '.join(component_terms)}). Deterministic threshold: at least "
+                f"{TECH_STACK_BREADTH_THRESHOLD} distinct technologies among React.js, Node.js, "
+                "and Express/Express.js."
             ),
+            shared_evidence_with=component_terms,
         )
     return ComponentEvaluation(
         term=dimension,
@@ -886,10 +891,27 @@ def _match_technical_dimension(
         component_class=CLASS_EVALUATION_DIMENSION,
         matched=False,
         note=(
-            "Unverified technical dimension: deterministic tech-stack-versatility mapping requires at "
-            "least two of React.js, Node.js, and Express.js."
+            "Unverified technical dimension: deterministic tech-stack-versatility mapping requires "
+            f"at least {TECH_STACK_BREADTH_THRESHOLD} distinct supported technologies among "
+            "React.js, Node.js, and Express/Express.js."
         ),
     )
+
+
+def _supported_technical_breadth_components(
+    components: list[ComponentEvaluation],
+) -> list[tuple[str, ComponentEvaluation]]:
+    by_canonical: dict[str, ComponentEvaluation] = {}
+    for component in components:
+        if not component.matched or not component.evidence:
+            continue
+        if component.component_class == CLASS_EVALUATION_DIMENSION:
+            continue
+        canonical = canonical_technical_breadth_term(component.term)
+        if canonical is None or canonical in by_canonical:
+            continue
+        by_canonical[canonical] = component
+    return list(by_canonical.items())
 
 
 def _git_related_adjacent_components(criterion: ScoringCriterion, index: list[EvidenceText]) -> list[ComponentEvaluation]:
@@ -1032,6 +1054,14 @@ def _component_assessment(
     preferred_components = [item for item in components if item.component_class == CLASS_PREFERRED]
     adjacent_components = [item for item in components if item.component_class == CLASS_ADJACENT]
     dimension_components = [item for item in components if item.component_class == CLASS_EVALUATION_DIMENSION]
+    dimension_domains = {
+        item.term: _dimension_domain_for_criterion(criterion, item.term)
+        for item in dimension_components
+    }
+    dimension_gap_labels = {
+        term: dimension_gap_label(domain)
+        for term, domain in dimension_domains.items()
+    }
     controlled_components = [item for item in required_components if _is_database_component(item.term)]
     controlled_evidence = [
         evidence_item
@@ -1050,6 +1080,8 @@ def _component_assessment(
         "preferred_skill_names": list(criterion.preferred_skill_names),
         "adjacent_skill_names": list(criterion.adjacent_skill_names),
         "evaluation_dimensions": list(criterion.evaluation_dimensions),
+        "evaluation_dimension_domains": dimension_domains,
+        "evaluation_dimension_gap_labels": dimension_gap_labels,
         "source_criterion_hash": _source_criterion_hash(criterion),
         "required_core_components": [item.term for item in required_components],
         "preferred_components": [item.term for item in preferred_components],
@@ -1116,6 +1148,15 @@ def _single_component_assessment(
             )
         ],
         evidence=evidence if matched else [],
+    )
+
+
+def _dimension_domain_for_criterion(criterion: ScoringCriterion, dimension: str) -> str:
+    return dimension_domain(
+        category=criterion.category.value,
+        criterion_name=criterion.name,
+        requirement_ids=criterion.requirement_ids,
+        dimension=dimension,
     )
 
 
@@ -1254,7 +1295,7 @@ def _report_gaps(evaluations: list[CriterionEvaluation]) -> list[str]:
                 semantic_key=f"preferred:{evaluation.criterion_id}:{term}",
             )
         for term in assessment.get("missing_evaluation_dimensions", []) or []:
-            prefix = _dimension_gap_prefix(evaluation.category)
+            prefix = _dimension_gap_prefix(assessment, term, evaluation.category)
             _append_unique(
                 gaps,
                 seen,
@@ -1272,7 +1313,14 @@ def _append_unique(output: list[str], seen: set[str], value: str, *, semantic_ke
         output.append(cleaned)
 
 
-def _dimension_gap_prefix(category: str | RequirementCategory) -> str:
+def _dimension_gap_prefix(
+    assessment: dict,
+    dimension: str,
+    category: str | RequirementCategory,
+) -> str:
+    labels = assessment.get("evaluation_dimension_gap_labels") or {}
+    if dimension in labels:
+        return str(labels[dimension])
     value = category.value if isinstance(category, RequirementCategory) else str(category)
     if value == RequirementCategory.SKILL.value:
         return "unverified technical dimension"
@@ -1334,13 +1382,6 @@ def _same_or_related_term(left: str, right: str) -> bool:
     return left_norm == right_norm or _contains_phrase(left_norm, right_norm) or _contains_phrase(right_norm, left_norm)
 
 
-def _is_experience_dimension(normalized: str) -> bool:
-    return (
-        (_contains_phrase(normalized, "year") or _contains_phrase(normalized, "duration"))
-        and _contains_phrase(normalized, "experience")
-    )
-
-
 def _is_experience_component(component: ComponentEvaluation) -> bool:
     text = normalize_token(" ".join([component.term, component.source, component.note]))
     return _contains_phrase(text, "experience") or _contains_phrase(text, "confirmed months")
@@ -1348,15 +1389,6 @@ def _is_experience_component(component: ComponentEvaluation) -> bool:
 
 def _is_communication_dimension(normalized: str) -> bool:
     return _contains_phrase(normalized, "communication")
-
-
-def _is_tech_stack_versatility_dimension(normalized: str) -> bool:
-    return (
-        _contains_phrase(normalized, "tech stack versatility")
-        or _contains_phrase(normalized, "technical versatility")
-        or (_contains_phrase(normalized, "versatility") and _contains_phrase(normalized, "stack"))
-        or (_contains_phrase(normalized, "technical breadth") and _contains_phrase(normalized, "technical"))
-    )
 
 
 def _allows_full_stack_adjacent(criterion: ScoringCriterion) -> bool:

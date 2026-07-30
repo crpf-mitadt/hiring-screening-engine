@@ -59,7 +59,6 @@ def write_csv_report(report: CandidateEvaluationReport, path: Path) -> Path:
 
 def _component_summary(assessment: dict) -> str:
     parts: list[str] = []
-    dimension_gap_label = _dimension_gap_label(str(assessment.get("category", "")))
     for label, key in (
         ("required/core", "required_core_components"),
         ("core", "supported_core_components"),
@@ -73,12 +72,21 @@ def _component_summary(assessment: dict) -> str:
         ("evaluation dimensions", "supported_evaluation_dimensions"),
         ("missing core", "missing_core_components"),
         ("missing preferred", "missing_preferred_components"),
-        (dimension_gap_label, "missing_evaluation_dimensions"),
     ):
         values = assessment.get(key) or []
         if values:
             parts.append(f"{label}: {', '.join(values)}")
+    parts.extend(_missing_dimension_parts(assessment))
     return " | ".join(parts)
+
+
+def _missing_dimension_parts(assessment: dict) -> list[str]:
+    labels = assessment.get("evaluation_dimension_gap_labels") or {}
+    grouped: dict[str, list[str]] = {}
+    for term in assessment.get("missing_evaluation_dimensions") or []:
+        label = labels.get(term) or _dimension_gap_label(str(assessment.get("category", "")))
+        grouped.setdefault(label, []).append(term)
+    return [f"{label}: {', '.join(values)}" for label, values in grouped.items()]
 
 
 def _dimension_gap_label(category: str) -> str:

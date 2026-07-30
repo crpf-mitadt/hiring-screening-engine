@@ -10,6 +10,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+from chandra_eval.scoring.dimensions import (
+    TECH_STACK_BREADTH_THRESHOLD,
+    canonical_technical_breadth_term,
+    dimension_domain,
+    dimension_gap_label,
+    is_experience_dimension,
+    is_tech_stack_versatility_dimension,
+)
+
 CheckResult = tuple[str, bool | None, str]
 
 
@@ -241,6 +250,14 @@ def _strengths_gaps_classified(evaluation: dict[str, Any]) -> tuple[str, bool, s
 
 def _dimension_labels_correct(evaluation: dict[str, Any]) -> tuple[str, bool, str]:
     criteria_by_name = {item.get("criterion_name"): item for item in evaluation.get("criterion_evaluations", [])}
+    gaps = set(evaluation.get("gaps", []))
+    for criterion in evaluation.get("criterion_evaluations", []):
+        assessment = criterion.get("component_assessment") or {}
+        for term in assessment.get("missing_evaluation_dimensions") or []:
+            expected = _expected_dimension_prefix(criterion, str(term))
+            expected_gap = f"{expected}: {criterion.get('criterion_name')}: {term}"
+            if expected_gap not in gaps:
+                return "dimension label correctness", False, f"missing semantic dimension gap: {expected_gap}"
     for gap in evaluation.get("gaps", []):
         if not gap.startswith("unverified ") or " dimension:" not in gap:
             continue
@@ -251,10 +268,10 @@ def _dimension_labels_correct(evaluation: dict[str, Any]) -> tuple[str, bool, st
         criterion = criteria_by_name.get(criterion_name)
         if criterion is None:
             return "dimension label correctness", False, f"dimension gap references unknown criterion {criterion_name}"
-        expected = _expected_dimension_prefix(str(criterion.get("category", "")))
+        expected = _expected_dimension_prefix(criterion, _term)
         if prefix != expected:
             return "dimension label correctness", False, f"{criterion_name} uses '{prefix}', expected '{expected}'"
-    return "dimension label correctness", True, "dimension gaps use category-aware labels"
+    return "dimension label correctness", True, "dimension gaps use semantic domain labels"
 
 
 def _semantic_dimension_duplicates(evaluation: dict[str, Any]) -> tuple[str, bool, str]:
@@ -268,13 +285,16 @@ def _semantic_dimension_duplicates(evaluation: dict[str, Any]) -> tuple[str, boo
                 continue
             term = str(component.get("term", ""))
             term_norm = _normalize(term)
-            if _is_experience_dimension(term_norm) and _has_supported_experience_component(components):
+            if is_experience_dimension(term_norm) and _has_supported_experience_component(components):
                 return (
                     "semantic dimension duplicates",
                     False,
                     f"{criterion['criterion_id']} leaves equivalent experience dimension '{term}' unverified",
                 )
-            if _is_tech_stack_versatility_dimension(term_norm) and _supported_tech_stack_terms(components) >= 2:
+            if (
+                is_tech_stack_versatility_dimension(term_norm)
+                and _supported_tech_stack_terms(components) >= TECH_STACK_BREADTH_THRESHOLD
+            ):
                 return (
                     "semantic dimension duplicates",
                     False,
@@ -373,27 +393,15 @@ def _normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
-def _expected_dimension_prefix(category: str) -> str:
-    if category == "skill":
-        return "unverified technical dimension"
-    if category == "experience":
-        return "unverified experience dimension"
-    if category == "leadership":
-        return "unverified soft-skill dimension"
-    return "unverified evaluation dimension"
-
-
-def _is_experience_dimension(normalized: str) -> bool:
-    return ("year" in normalized or "duration" in normalized) and "experience" in normalized
-
-
-def _is_tech_stack_versatility_dimension(normalized: str) -> bool:
-    return (
-        "tech stack versatility" in normalized
-        or "technical versatility" in normalized
-        or ("versatility" in normalized and "stack" in normalized)
-        or "technical breadth" in normalized
+def _expected_dimension_prefix(criterion: dict[str, Any], dimension: str) -> str:
+    assessment = criterion.get("component_assessment") or {}
+    domain = dimension_domain(
+        category=str(criterion.get("category", "")),
+        criterion_name=str(criterion.get("criterion_name", "")),
+        requirement_ids=assessment.get("requirement_ids") or criterion.get("requirement_ids") or [],
+        dimension=dimension,
     )
+    return dimension_gap_label(domain)
 
 
 def _is_communication_dimension(normalized: str) -> bool:
@@ -423,15 +431,11 @@ def _supported_tech_stack_terms(components: list[dict]) -> int:
     for component in components:
         if not component.get("matched"):
             continue
-        text = _normalize(
-            " ".join([str(component.get("term", "")), json.dumps(component.get("evidence", []))])
-        )
-        if "react" in text:
-            supported.add("react")
-        if "node" in text:
-            supported.add("node")
-        if "express" in text:
-            supported.add("express")
+        canonical = canonical_technical_breadth_term(str(component.get("term", "")))
+        if canonical is None:
+            canonical = canonical_technical_breadth_term(json.dumps(component.get("evidence", [])))
+        if canonical is not None:
+            supported.add(canonical)
     return len(supported)
 
 

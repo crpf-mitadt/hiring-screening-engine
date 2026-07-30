@@ -1572,6 +1572,140 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertIn("Tech stack versatility", criterion.component_assessment["supported_evaluation_dimensions"])
         self.assertEqual(criterion.match_fraction, 1)
 
+    def test_react_node_and_express_satisfy_tech_stack_versatility_with_provenance(self) -> None:
+        criterion = self._tech_stack_versatility_result(["React.js", "Node.js", "Express"])
+        dimension = next(
+            item for item in criterion.component_assessment["components"] if item["term"] == "Tech stack versatility"
+        )
+
+        self.assertTrue(dimension["matched"])
+        self.assertEqual(dimension["shared_evidence_with"], ["React.js", "Node.js", "Express"])
+        self.assertEqual(dimension["evidence_count"], 3)
+        self.assertEqual(len(criterion.evidence), 3)
+        self.assertIn("at least 2 distinct technologies", dimension["note"])
+        self.assertIn("reusing evidence from multiple supported technical components", dimension["note"])
+
+    def test_express_and_express_js_normalize_for_tech_stack_versatility(self) -> None:
+        for express_term in ("Express", "Express.js"):
+            with self.subTest(express_term=express_term):
+                criterion = self._tech_stack_versatility_result(["React.js", express_term])
+                dimension = next(
+                    item for item in criterion.component_assessment["components"] if item["term"] == "Tech stack versatility"
+                )
+
+                self.assertTrue(dimension["matched"])
+                self.assertEqual(dimension["shared_evidence_with"], ["React.js", express_term])
+
+    def test_one_supported_technology_does_not_satisfy_tech_stack_versatility(self) -> None:
+        criterion = self._tech_stack_versatility_result(["React.js"])
+        dimension = next(
+            item for item in criterion.component_assessment["components"] if item["term"] == "Tech stack versatility"
+        )
+
+        self.assertFalse(dimension["matched"])
+        self.assertEqual(dimension["shared_evidence_with"], [])
+        self.assertIn("Tech stack versatility", criterion.component_assessment["missing_evaluation_dimensions"])
+
+    def test_unrelated_supported_preferred_terms_do_not_satisfy_tech_stack_versatility(self) -> None:
+        criterion = self._tech_stack_versatility_result(["SEO", "Figma", "Google Analytics"])
+        dimension = next(
+            item for item in criterion.component_assessment["components"] if item["term"] == "Tech stack versatility"
+        )
+
+        self.assertFalse(dimension["matched"])
+        self.assertEqual(dimension["evidence_count"], 0)
+
+    def test_dimension_domains_use_soft_skill_semantics_before_category_fallback(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_soft_01",
+                    category=RequirementCategory.LEADERSHIP,
+                    description="Soft skills and proactivity.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="soft",
+                    name="Soft Skills and Proactivity",
+                    category=RequirementCategory.SKILL,
+                    description="Communication, initiative, and ownership.",
+                    weight=20,
+                    requirement_ids=["req_soft_01"],
+                    evaluation_dimensions=["Communication clarity", "Initiative"],
+                ),
+                ScoringCriterion(
+                    criterion_id="linked-soft",
+                    name="Working Style",
+                    category=RequirementCategory.SKILL,
+                    description="Behavioural requirement linkage.",
+                    weight=20,
+                    requirement_ids=["req_soft_02"],
+                    evaluation_dimensions=["Follow-through"],
+                ),
+                ScoringCriterion(
+                    criterion_id="technical",
+                    name="Engineering Quality",
+                    category=RequirementCategory.SKILL,
+                    description="Technical implementation quality.",
+                    weight=20,
+                    evaluation_dimensions=["Code quality", "Database architecture", "CMS customization"],
+                ),
+                ScoringCriterion(
+                    criterion_id="experience",
+                    name="Experience and Breadth",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Experience and technical breadth.",
+                    weight=20,
+                    requirement_ids=["req_exp_01"],
+                    evaluation_dimensions=["Years of experience", "Tech stack versatility"],
+                ),
+                ScoringCriterion(
+                    criterion_id="generic",
+                    name="General Fit",
+                    category=RequirementCategory.OTHER,
+                    description="General evaluation.",
+                    weight=20,
+                    evaluation_dimensions=["Documentation completeness"],
+                ),
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {"candidate_id": "candidate", "source_document_id": "resume"}
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        gaps = set(report.gaps)
+
+        self.assertIn("unverified soft-skill dimension: Soft Skills and Proactivity: Communication clarity", gaps)
+        self.assertIn("unverified soft-skill dimension: Soft Skills and Proactivity: Initiative", gaps)
+        self.assertIn("unverified soft-skill dimension: Working Style: Follow-through", gaps)
+        self.assertIn("unverified technical dimension: Engineering Quality: Code quality", gaps)
+        self.assertIn("unverified technical dimension: Engineering Quality: Database architecture", gaps)
+        self.assertIn("unverified technical dimension: Engineering Quality: CMS customization", gaps)
+        self.assertIn("unverified experience dimension: Experience and Breadth: Years of experience", gaps)
+        self.assertIn("unverified experience dimension: Experience and Breadth: Tech stack versatility", gaps)
+        self.assertIn("unverified evaluation dimension: General Fit: Documentation completeness", gaps)
+        self.assertEqual(report.missing_information, sorted(set(report.gaps)))
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from chandra_eval.reports.csv_report import write_csv_report
+            from chandra_eval.reports.html_report import write_html_report
+
+            csv_text = write_csv_report(report, root / "evaluation.csv").read_text(encoding="utf-8")
+            html_text = write_html_report(report, root / "evaluation.html").read_text(encoding="utf-8")
+
+        self.assertIn("unverified soft-skill dimension: Communication clarity, Initiative", csv_text)
+        self.assertIn("unverified soft-skill dimension: Communication clarity, Initiative", html_text)
+        self.assertIn("unverified technical dimension: Code quality, Database architecture, CMS customization", csv_text)
+        self.assertIn("unverified experience dimension: Years of experience, Tech stack versatility", html_text)
+
     def test_report_gaps_use_one_structured_entry_per_missing_component(self) -> None:
         jd = self._full_stack_jd()
         candidate = CandidateProfile.model_validate(
@@ -1723,6 +1857,32 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertEqual(operational_report.eligibility.requirement_statuses["ai-ml-experience"], "not_found")
         self.assertNotIn("no deterministic minimum value", str(operational_report.model_dump()).lower())
         self.assertEqual(direct_report.eligibility.requirement_statuses["ai-ml-experience"], "met")
+
+    def _tech_stack_versatility_result(self, supported_terms: list[str]) -> CriterionEvaluation:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="technical-breadth",
+                    name="Technical Breadth",
+                    category=RequirementCategory.SKILL,
+                    description="Modern JavaScript stack breadth.",
+                    weight=100,
+                    preferred_skill_names=supported_terms,
+                    evaluation_dimensions=["Tech stack versatility"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": supported_terms,
+            }
+        )
+        return evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
 
     def test_evidence_completeness_accounts_for_dates_and_partial_ocr(self) -> None:
         with_evidence = CriterionEvaluation(

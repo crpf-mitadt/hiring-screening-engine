@@ -58,6 +58,17 @@ Every `requirement_id` listed by a criterion must be represented in `component_a
 - Duplicated source blocks are merged by stable source identity.
 - One source block can support multiple facts only when each fact has its own component-level rationale.
 
+## Evaluation Dimensions
+
+Dimension labels are semantic, not category-only. The domain is resolved from explicit dimension
+metadata when present, then linked requirement IDs/categories, then criterion name and known
+dimension terms, and finally the criterion category fallback.
+
+`Tech stack versatility` uses deterministic breadth sharing. It is supported when at least two
+distinct supported technical components normalize to this set: `React.js`, `Node.js`, and
+`Express`/`Express.js`. The dimension reuses the deduplicated evidence from those supported
+components and records the component display terms in `shared_evidence_with`.
+
 ## Scoring Policy
 
 `match_fraction` must be one of `0`, `0.25`, `0.5`, `0.75`, `1`.

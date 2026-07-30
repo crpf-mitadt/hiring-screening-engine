@@ -812,9 +812,17 @@ def _summary_component_text(item: dict) -> str:
     if missing_preferred:
         parts.append("missing preferred: " + ", ".join(missing_preferred[:5]))
     if missing_dimensions:
-        label = _dimension_gap_label(str(assessment.get("category", "")))
-        parts.append(label + ": " + ", ".join(missing_dimensions[:5]))
+        parts.extend(_missing_dimension_parts(assessment))
     return "<br>".join(parts) or "No in-scope components matched."
+
+
+def _missing_dimension_parts(assessment: dict) -> list[str]:
+    labels = assessment.get("evaluation_dimension_gap_labels") or {}
+    grouped: dict[str, list[str]] = {}
+    for term in assessment.get("missing_evaluation_dimensions") or []:
+        label = labels.get(term) or _dimension_gap_label(str(assessment.get("category", "")))
+        grouped.setdefault(label, []).append(term)
+    return [label + ": " + ", ".join(values[:5]) for label, values in grouped.items()]
 
 
 def _dimension_gap_label(category: str) -> str:
