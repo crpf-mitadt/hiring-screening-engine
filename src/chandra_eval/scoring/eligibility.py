@@ -2,6 +2,7 @@
 
 from chandra_eval.scoring.experience import calculate_experience_duration
 from chandra_eval.scoring.education import evaluate_education_requirement
+from chandra_eval.scoring.experience_basis import qualify_quantitative_experience
 from chandra_eval.scoring.matching import build_candidate_evidence_index, match_qualitative_experience, match_requirement
 from chandra_eval.schemas.evaluation import EligibilityResult, EligibilityStatus
 from chandra_eval.schemas.jd import RequirementCategory, StructuredJD
@@ -59,8 +60,22 @@ def evaluate_eligibility(
                     detail["ambiguity"].extend(match.ambiguity)
                     ambiguous.append(requirement.requirement_id)
             elif duration.confirmed_months >= int(requirement.minimum_value):
-                requirement_statuses[requirement.requirement_id] = "met"
-                detail["status"] = "met"
+                qualification = qualify_quantitative_experience(
+                    candidate,
+                    required_months=int(requirement.minimum_value),
+                    requirement_text=requirement.description,
+                )
+                if qualification.confirmed_months >= int(requirement.minimum_value) and qualification.evidence:
+                    requirement_statuses[requirement.requirement_id] = "met"
+                    detail["status"] = "met"
+                    detail["evidence"] = [item.model_dump(mode="json") for item in qualification.evidence]
+                    detail["ambiguity"].append(qualification.explanation)
+                else:
+                    requirement_statuses[requirement.requirement_id] = "unclear"
+                    detail["status"] = "unclear"
+                    detail["missing_evidence"] = "Numeric duration was sufficient, but relevant role/date evidence was not traceable."
+                    detail["ambiguity"].extend(qualification.ambiguity or [qualification.explanation])
+                    ambiguous.append(requirement.requirement_id)
             elif duration.uncertain_ranges:
                 requirement_statuses[requirement.requirement_id] = "unclear"
                 detail["status"] = "unclear"

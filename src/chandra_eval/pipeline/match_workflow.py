@@ -662,6 +662,8 @@ def _build_summary(
                 "match_fraction": item.match_fraction,
                 "weighted_score": item.weighted_score,
                 "evidence_count": len(item.evidence),
+                "evidence_found": item.evidence_found,
+                "candidate_requirement": item.candidate_requirement,
                 "missing_information": item.missing_information,
                 "ambiguity": item.ambiguity,
             }
@@ -700,7 +702,8 @@ def _summary_markdown(summary: dict) -> str:
         for item in summary.get("mandatory_requirement_details", [])
     ) or "| None | not_applicable | No direct evidence recorded. | None |"
     criterion_rows = "\n".join(
-        f"| {item['criterion_id']} | {item['match_fraction']:.3f} | {item['weighted_score']:.3f} | {item['status']} |"
+        f"| {item['criterion_id']} | {item['match_fraction']:.3f} | {item['weighted_score']:.3f} | "
+        f"{item['status']} | {'<br>'.join(item.get('evidence_found', [])[:3]) or 'No direct evidence recorded.'} |"
         for item in summary["criterion_scores"]
     )
     stages = "\n".join(
@@ -739,8 +742,8 @@ Models: Chandra={summary['chandra_model']}, Gemma={summary['gemma_model']}
 
 ## Criterion scores
 
-| Criterion | Match | Weighted score | Status |
-| --- | ---: | ---: | --- |
+| Criterion | Match | Weighted score | Status | Evidence |
+| --- | ---: | ---: | --- | --- |
 {criterion_rows}
 
 ## Strengths

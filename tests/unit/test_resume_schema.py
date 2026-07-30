@@ -106,7 +106,7 @@ class ResumeSchemaTests(unittest.TestCase):
         report = evaluate_candidate(candidate.scoring_safe_profile, jd, evaluation_id="eval-null")
 
         self.assertEqual(report.final_score, 0)
-        self.assertIn("12 additional months of experience", report.missing_information)
+        self.assertIn("12 additional months of relevant experience", report.missing_information)
 
 
 if __name__ == "__main__":

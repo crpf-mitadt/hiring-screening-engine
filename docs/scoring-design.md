@@ -32,7 +32,9 @@ Missing evidence is not a hard failure by itself. Mandatory eligibility uses:
 
 Experience duration is overlap-adjusted. Confirmed months are calculated only from independently
 parseable ranges. Malformed dates such as a truncated year are preserved as uncertain ranges and do
-not erase duration from valid entries.
+not erase duration from valid entries. Quantitative experience scoring must also attach source
+evidence for the qualifying role, organization when available, dates, and role relevance. Aggregate
+months alone cannot produce a positive score or a met mandatory requirement.
 
 Criterion matching uses the scoring-safe profile only. It searches summary, education, experience
 titles and responsibilities, skills used, top-level skills, projects, publications, teaching,
@@ -41,6 +43,14 @@ map for auditable business terms such as MS Office, CRM, lead generation, and ca
 Term matching uses token or phrase boundaries. Short technical terms such as Git, R, C, Go, ML, AI,
 AWS, GCP, and SQL do not match inside unrelated words. `Git` may match `GitHub` only through the
 explicit alias map.
+
+Database requirements use controlled alternatives. `MySQL or similar enterprise databases` can match
+direct MySQL evidence or PostgreSQL evidence, but `MySQL only` remains strict. Generic terms such as
+data, storage, backend, or database without a named controlled technology are conservative.
+
+Multi-component technical criteria are scored by independently matching each component, then mapping
+the supported component fraction to the approved discrete scale. For four required components, one,
+two, three, and four supported components map to `0.25`, `0.50`, `0.75`, and `1.00`.
 
 Degree requirements are source-constrained: they may match only structured education entries and
 their evidence. Experience paragraphs, job titles, generic ML/AI mentions, leadership text, company
@@ -62,6 +72,7 @@ items appear as `verification_needed`.
 
 Final criterion `match_fraction` values are discrete: `0.00`, `0.25`, `0.50`, `0.75`, or `1.00`.
 Weighted scores are `criterion.weight * match_fraction`; Python owns this arithmetic.
+Any positive `weighted_score` must carry at least one valid evidence reference.
 
 Evidence completeness is deterministic:
 

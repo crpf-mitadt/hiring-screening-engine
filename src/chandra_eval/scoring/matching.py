@@ -39,6 +39,10 @@ _STOPWORDS = {
 
 _ALIASES: dict[str, tuple[str, ...]] = {
     "git": ("github",),
+    "sql": ("mysql", "postgresql", "postgres"),
+    "database management": ("mysql", "postgresql", "postgres", "database operations"),
+    "enterprise database": ("mysql", "postgresql", "postgres"),
+    "enterprise databases": ("mysql", "postgresql", "postgres"),
     "ms office": ("excel", "word", "powerpoint", "presentation", "report"),
     "microsoft office": ("excel", "word", "powerpoint", "presentation", "report"),
     "ms excel": ("excel", "spreadsheet"),
@@ -186,7 +190,7 @@ def match_requirement(
     *,
     allowed_sources: set[str] | None = None,
 ) -> MatchResult:
-    terms = _dedupe_terms([description, *(equivalents or []), *_important_phrases(description)])
+    terms = _requirement_terms(description, equivalents or [])
     return match_terms(terms[: max(1, len(terms))], index, allowed_sources=allowed_sources)
 
 
@@ -341,11 +345,11 @@ def _is_education_reason(reason: str) -> bool:
 
 def _term_options(normalized: str) -> list[str]:
     options = [normalized]
+    if ("sql" in normalized and "database" in normalized) or "database management" in normalized:
+        options.extend(("sql", "database management", "mysql", "postgresql", "postgres", "database operations"))
     options.extend(_ALIASES.get(normalized, ()))
-    for alias, equivalents in _ALIASES.items():
-        if normalized == alias or normalized in equivalents:
-            options.append(alias)
-            options.extend(equivalents)
+    if normalized == "github":
+        options.append("git")
     return _dedupe_terms(options)
 
 
@@ -366,8 +370,35 @@ def _phrase_relevant(phrase: str, seed_text: str) -> bool:
 
 
 def _important_phrases(text: str) -> list[str]:
-    chunks = [chunk.strip() for chunk in re.split(r"[,;/]|\band\b|\bor\b", text, flags=re.IGNORECASE)]
+    chunks = [chunk.strip() for chunk in re.split(r"[,;]|\band\b|\bor\b", text, flags=re.IGNORECASE)]
     return [chunk for chunk in chunks if len(_meaningful_tokens(chunk)) >= 1][:8]
+
+
+def _requirement_terms(description: str, equivalents: list[str]) -> list[str]:
+    database_terms = _database_requirement_terms(description)
+    if database_terms:
+        return _dedupe_terms([*database_terms, *equivalents])
+    normalized = normalize_token(description)
+    if "database" in normalized and not database_terms:
+        return _dedupe_terms([description, *equivalents])
+    return _dedupe_terms([description, *equivalents, *_important_phrases(description)])
+
+
+def _database_requirement_terms(description: str) -> list[str]:
+    normalized = normalize_token(description)
+    terms: list[str] = []
+    if _contains_phrase(normalized, "mysql"):
+        terms.append("MySQL")
+        if any(
+            _contains_phrase(normalized, phrase)
+            for phrase in ("similar", "equivalent", "enterprise database", "enterprise databases", "relational database", "relational databases")
+        ):
+            terms.append("PostgreSQL")
+    if _contains_phrase(normalized, "postgresql") or _contains_phrase(normalized, "postgres"):
+        terms.append("PostgreSQL")
+    if _contains_phrase(normalized, "sql") and ("database" in normalized or "databases" in normalized):
+        terms.append("SQL")
+    return _dedupe_terms(terms)
 
 
 def _meaningful_tokens(value: str) -> set[str]:

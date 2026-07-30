@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from chandra_eval.schemas.common import EvidenceRef, StrictBaseModel
 
@@ -47,6 +47,12 @@ class CriterionEvaluation(StrictBaseModel):
         if rounded not in approved:
             raise ValueError("match_fraction must be one of 0.00, 0.25, 0.50, 0.75, 1.00")
         return rounded
+
+    @model_validator(mode="after")
+    def _positive_score_requires_evidence(self) -> "CriterionEvaluation":
+        if self.weighted_score > 0 and not self.evidence:
+            raise ValueError("weighted_score > 0 requires at least one valid evidence item")
+        return self
 
 
 class EligibilityResult(StrictBaseModel):

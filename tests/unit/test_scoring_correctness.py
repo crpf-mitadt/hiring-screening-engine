@@ -24,6 +24,7 @@ class ScoringCorrectnessTests(unittest.TestCase):
                 weighted_score=value * 10,
                 status=CriterionStatus.MET if value == 1 else CriterionStatus.PARTIALLY_MET,
                 explanation="ok",
+                evidence=[] if value == 0 else [_evidence("supported")],
             )
         for value in (0.083, 0.333, 0.071):
             with self.subTest(value=value):
@@ -35,6 +36,16 @@ class ScoringCorrectnessTests(unittest.TestCase):
                         status=CriterionStatus.PARTIALLY_MET,
                         explanation="bad",
                     )
+
+    def test_positive_weighted_score_requires_evidence(self) -> None:
+        with self.assertRaises(ValidationError):
+            CriterionEvaluation(
+                criterion_id="bad-positive",
+                match_fraction=0.25,
+                weighted_score=1,
+                status=CriterionStatus.PARTIALLY_MET,
+                explanation="bad",
+            )
 
     def test_accepted_evidence_is_verification_not_missing_requirement(self) -> None:
         candidate = CandidateProfile.model_validate(
@@ -336,6 +347,295 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertEqual(report.evidence_completeness, 0)
         self.assertEqual(report.criterion_evaluations[0].evidence, [])
         self.assertNotIn("Indian School of Business", str(report.model_dump()))
+
+    def test_supported_quantitative_experience_attaches_role_date_and_relevance_evidence(self) -> None:
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "title": "Software Developer I",
+                        "organization": "Synthetic Product Company",
+                        "start_date": "January 2024",
+                        "end_date": "Present",
+                        "responsibilities": [
+                            "Full-stack logistics systems, Node.js, Express.js, React.js, Vue.js, REST APIs, PostgreSQL and MySQL."
+                        ],
+                        "skills_used": ["Node.js", "React.js", "MySQL", "PostgreSQL"],
+                        "evidence": [
+                            _evidence("Software Developer I").model_dump(mode="json"),
+                            _evidence("Synthetic Product Company").model_dump(mode="json"),
+                            _evidence("January 2024 - Present").model_dump(mode="json"),
+                            _evidence(
+                                "Full-stack logistics systems, Node.js, Express.js, React.js, Vue.js, REST APIs, PostgreSQL and MySQL."
+                            ).model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="experience",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="experience",
+                    name="Relevant full-stack experience",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    weight=100,
+                    mandatory=True,
+                )
+            ],
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        criterion = report.criterion_evaluations[0]
+        detail = report.eligibility.requirement_details[0]
+
+        self.assertEqual(report.eligibility.requirement_statuses["experience"], "met")
+        self.assertEqual(criterion.match_fraction, 1)
+        self.assertEqual(criterion.weighted_score, 100)
+        self.assertGreaterEqual(report.experience_summary["confirmed_months"], 30)
+        self.assertGreaterEqual(len(criterion.evidence), 3)
+        self.assertIn("Software Developer I", " ".join(item.exact_text for item in criterion.evidence))
+        self.assertIn("January 2024 - Present", " ".join(item.exact_text for item in criterion.evidence))
+        self.assertIn("Full-stack logistics systems", " ".join(item.exact_text for item in criterion.evidence))
+        self.assertGreater(len(detail["evidence"]), 0)
+        self.assertNotIn("No direct resume evidence", criterion.explanation)
+        self.assertNotIn("Minimum 24 months", report.missing_information)
+        self.assertGreater(report.evidence_completeness, 0)
+
+    def test_duration_without_relevance_evidence_does_not_fully_satisfy_experience(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="experience",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="experience",
+                    name="Relevant full-stack experience",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    weight=100,
+                    mandatory=True,
+                )
+            ],
+        )
+        unrelated = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "title": "Administrative Coordinator",
+                        "start_date": "2024-01",
+                        "end_date": "Present",
+                        "responsibilities": ["Managed schedules and vendor documentation."],
+                        "evidence": [
+                            _evidence("Administrative Coordinator").model_dump(mode="json"),
+                            _evidence("January 2024 - Present").model_dump(mode="json"),
+                            _evidence("Managed schedules and vendor documentation.").model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+        ambiguous = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "title": "Software Developer",
+                        "start_date": "2024-01",
+                        "end_date": "Present",
+                        "responsibilities": ["Worked on internal systems."],
+                        "evidence": [
+                            _evidence("Software Developer").model_dump(mode="json"),
+                            _evidence("January 2024 - Present").model_dump(mode="json"),
+                            _evidence("Worked on internal systems.").model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+
+        unrelated_report = evaluate_candidate(unrelated.scoring_safe_profile, jd)
+        ambiguous_report = evaluate_candidate(ambiguous.scoring_safe_profile, jd)
+
+        self.assertNotEqual(unrelated_report.eligibility.requirement_statuses["experience"], "met")
+        self.assertEqual(unrelated_report.criterion_evaluations[0].weighted_score, 0)
+        self.assertNotEqual(ambiguous_report.eligibility.requirement_statuses["experience"], "met")
+        self.assertLess(ambiguous_report.criterion_evaluations[0].match_fraction, 1)
+
+    def test_mysql_and_controlled_postgresql_database_equivalency(self) -> None:
+        requirement = "Experience with MySQL or similar enterprise databases."
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="database",
+                    category=RequirementCategory.SKILL,
+                    description=requirement,
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                )
+            ],
+        )
+
+        def candidate_with(skill_text: str) -> CandidateProfile:
+            return CandidateProfile.model_validate(
+                {
+                    "candidate_id": "candidate",
+                    "source_document_id": "resume",
+                    "skills": [skill_text],
+                    "experience": [
+                        {
+                            "responsibilities": [skill_text],
+                            "evidence": [_evidence(skill_text).model_dump(mode="json")],
+                        }
+                    ],
+                    "projects": [skill_text],
+                }
+            )
+
+        mysql = evaluate_candidate(candidate_with("Optimized PostgreSQL/MySQL database operations.").scoring_safe_profile, jd)
+        postgres = evaluate_candidate(candidate_with("Implemented PostgreSQL database storage.").scoring_safe_profile, jd)
+        generic = evaluate_candidate(candidate_with("Managed backend data storage.").scoring_safe_profile, jd)
+        strict_jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="database",
+                    category=RequirementCategory.SKILL,
+                    description="MySQL only",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                )
+            ],
+        )
+        strict_postgres = evaluate_candidate(candidate_with("PostgreSQL database implementation.").scoring_safe_profile, strict_jd)
+
+        self.assertEqual(mysql.eligibility.requirement_statuses["database"], "met")
+        self.assertIn("MySQL", str(mysql.eligibility.requirement_details))
+        self.assertEqual(postgres.eligibility.requirement_statuses["database"], "met")
+        self.assertIn("PostgreSQL", str(postgres.eligibility.requirement_details))
+        self.assertEqual(generic.eligibility.requirement_statuses["database"], "not_found")
+        self.assertEqual(strict_postgres.eligibility.requirement_statuses["database"], "not_found")
+
+    def test_technical_stack_partial_credit_uses_independent_components(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="technical-stack",
+                    name="Technical stack",
+                    category=RequirementCategory.SKILL,
+                    description="PHP; Laravel; WordPress; SQL/database management",
+                    weight=40,
+                    required_skill_names=["PHP", "Laravel", "WordPress", "SQL/database management"],
+                ),
+                ScoringCriterion(
+                    criterion_id="other",
+                    name="Other",
+                    category=RequirementCategory.OTHER,
+                    description="No-op",
+                    weight=60,
+                ),
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["MySQL", "PostgreSQL"],
+                "experience": [
+                    {
+                        "responsibilities": ["Optimized PostgreSQL/MySQL database operations for reliability and performance."],
+                        "evidence": [
+                            _evidence("Optimized PostgreSQL/MySQL database operations for reliability and performance.").model_dump(mode="json")
+                        ],
+                    }
+                ],
+            }
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        criterion = report.criterion_evaluations[0]
+
+        self.assertEqual(criterion.match_fraction, 0.25)
+        self.assertEqual(criterion.weighted_score, 10)
+        self.assertIn("SQL/database management", criterion.explanation)
+        self.assertIn("PHP", " ".join(criterion.missing_information))
+        self.assertIn("Laravel", " ".join(criterion.missing_information))
+        self.assertIn("WordPress", " ".join(criterion.missing_information))
+        self.assertIn("PostgreSQL/MySQL database operations", " ".join(criterion.evidence_found))
+
+    def test_component_to_discrete_mapping_covers_all_valid_fractions(self) -> None:
+        components = ["PHP", "Laravel", "WordPress", "SQL/database management"]
+        expected_by_count = {0: 0, 1: 0.25, 2: 0.5, 3: 0.75, 4: 1}
+        for count, expected in expected_by_count.items():
+            with self.subTest(count=count):
+                skills = components[:count]
+                if "SQL/database management" in skills:
+                    skills = [*skills[:-1], "MySQL"]
+                candidate = CandidateProfile.model_validate(
+                    {
+                        "candidate_id": "candidate",
+                        "source_document_id": "resume",
+                        "skills": skills,
+                    }
+                )
+                jd = StructuredJD(
+                    job_id="job",
+                    source_document_id="jd",
+                    job_title="Full Stack Developer",
+                    scoring_rubric=[
+                        ScoringCriterion(
+                            criterion_id="technical-stack",
+                            name="Technical stack",
+                            category=RequirementCategory.SKILL,
+                            description="PHP; Laravel; WordPress; SQL/database management",
+                            weight=100,
+                            required_skill_names=components,
+                        )
+                    ],
+                )
+                report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+                self.assertEqual(report.criterion_evaluations[0].match_fraction, expected)
 
     def test_qualitative_experience_does_not_require_numeric_months(self) -> None:
         requirement = JDRequirement(

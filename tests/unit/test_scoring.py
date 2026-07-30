@@ -17,7 +17,7 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(report.eligibility.status.value, "PASS")
         self.assertGreaterEqual(report.final_score, 80)
         self.assertTrue(report.human_review_required)
-        self.assertIn("required-skills", report.strengths)
+        self.assertIn("Required skills", report.strengths)
 
 
 if __name__ == "__main__":

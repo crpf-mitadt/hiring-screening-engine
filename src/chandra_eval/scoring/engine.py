@@ -6,6 +6,7 @@ from chandra_eval.scoring.eligibility import evaluate_eligibility
 from chandra_eval.scoring.education import evaluate_education_requirement
 from chandra_eval.scoring.evidence_completeness import evidence_completeness
 from chandra_eval.scoring.experience import calculate_experience_duration
+from chandra_eval.scoring.experience_basis import qualify_quantitative_experience
 from chandra_eval.scoring.matching import (
     build_candidate_evidence_index,
     criterion_terms,
@@ -65,15 +66,33 @@ def _score_criterion(
 
     if criterion.category == RequirementCategory.EXPERIENCE:
         required_months = jd.minimum_experience_months or _minimum_from_requirements(jd)
-        actual_months = int(experience_summary["confirmed_months"])
         if required_months:
-            fraction = min(actual_months / required_months, 1.0)
-            if actual_months < required_months:
-                missing.append(f"{required_months - actual_months} additional months of experience")
-                if experience_summary.get("uncertain_ranges"):
-                    ambiguity.append(
-                        "One or more experience date ranges are ambiguous and may affect the minimum."
-                    )
+            qualification = qualify_quantitative_experience(
+                candidate,
+                required_months=required_months,
+                requirement_text=criterion.description,
+            )
+            fraction = qualification.fraction
+            evidence = qualification.evidence
+            missing = qualification.missing
+            ambiguity = qualification.ambiguity
+            if qualification.confirmed_months < required_months and experience_summary.get("uncertain_ranges"):
+                ambiguity.append("One or more experience date ranges are ambiguous and may affect the minimum.")
+            fraction = discrete_match_fraction(fraction)
+            explanation = qualification.explanation
+            return CriterionEvaluation(
+                criterion_id=criterion.criterion_id,
+                match_fraction=fraction,
+                weighted_score=round(criterion.weight * fraction, 6),
+                status=_status(fraction, has_terms=True, ambiguous=bool(ambiguity)),
+                explanation=explanation,
+                evidence=evidence,
+                missing_information=missing,
+                ambiguity=ambiguity,
+                verification_needed=verification_needed,
+                candidate_requirement=criterion.description,
+                evidence_found=_evidence_found(evidence),
+            )
         else:
             match = match_qualitative_experience(criterion.description, index)
             terms = match.terms
@@ -95,31 +114,6 @@ def _score_criterion(
                 candidate_requirement=criterion.description,
                 evidence_found=_evidence_found(evidence),
             )
-        terms = criterion_terms(criterion, jd)
-        semantic = match_terms(terms, index)
-        evidence = semantic.evidence
-        if semantic.fraction > 0 and fraction < 1.0:
-            fraction = max(fraction, min(semantic.fraction, 0.75))
-        fraction = discrete_match_fraction(fraction)
-        missing.extend(term for term in semantic.missing_terms if term not in missing)
-        explanation = (
-            f"Confirmed {actual_months} months against {required_months or 0} required months. "
-            f"{_match_explanation(semantic.matches, semantic.missing_terms, ambiguity)}"
-        )
-        return CriterionEvaluation(
-            criterion_id=criterion.criterion_id,
-            match_fraction=fraction,
-            weighted_score=round(criterion.weight * fraction, 6),
-            status=_status(fraction, has_terms=True, ambiguous=bool(ambiguity)),
-            explanation=explanation,
-            evidence=evidence,
-            missing_information=missing,
-            ambiguity=ambiguity,
-            verification_needed=verification_needed,
-            candidate_requirement=criterion.description,
-            evidence_found=_evidence_found(evidence),
-        )
-
     if criterion.category == RequirementCategory.EDUCATION:
         education_match = evaluate_education_requirement(criterion.description, candidate.education)
         fraction = 1.0 if education_match.matched else 0.0
@@ -212,8 +206,9 @@ def evaluate_candidate(
     final_score = min(100.0, round(raw_score, 3))
 
     gaps = sorted({gap for item in evaluations for gap in item.missing_information})
+    criteria_by_id = {criterion.criterion_id: criterion for criterion in criteria}
     strengths = [
-        item.criterion_id
+        criteria_by_id[item.criterion_id].name or criteria_by_id[item.criterion_id].description or item.criterion_id
         for item in evaluations
         if item.status == CriterionStatus.MET
     ]
