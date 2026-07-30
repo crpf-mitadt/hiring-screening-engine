@@ -61,6 +61,8 @@ class CriterionEvaluation(StrictBaseModel):
             self.model_assessment = self.component_assessment
         if self.category in {"skill", "leadership"} and not self.component_assessment:
             raise ValueError("skill and leadership criteria require populated component_assessment")
+        if self.component_assessment:
+            self._validate_component_assessment()
         if self.weighted_score > 0 and not self.evidence:
             raise ValueError("weighted_score > 0 requires at least one valid evidence item")
         if self.weighted_score > 0 and self.component_assessment:
@@ -68,6 +70,54 @@ class CriterionEvaluation(StrictBaseModel):
             if scopes and not any(scope == "in_scope" for scope in scopes):
                 raise ValueError("weighted_score > 0 requires in-scope criterion evidence")
         return self
+
+    def _validate_component_assessment(self) -> None:
+        assessment = self.component_assessment
+        required_core = set(assessment.get("required_core_components", []))
+        controlled_scope = set(assessment.get("controlled_equivalent_components", []))
+        adjacent_scope = set(assessment.get("adjacent_components_considered", []))
+        supported_core = set(assessment.get("supported_core_components", []))
+        supported_controlled = set(assessment.get("supported_controlled_equivalents", []))
+        supported_adjacent = set(assessment.get("supported_adjacent_components", []))
+        missing_core = set(assessment.get("missing_core_components", []))
+        if not supported_core.issubset(required_core):
+            raise ValueError("supported_core_components must be a subset of required_core_components")
+        if supported_controlled and not controlled_scope:
+            raise ValueError("supported_controlled_equivalents require controlled_equivalent_components")
+        if not supported_adjacent.issubset(adjacent_scope):
+            raise ValueError("supported_adjacent_components must be a subset of adjacent_components_considered")
+        if missing_core != required_core - supported_core:
+            raise ValueError("missing_core_components must equal unmatched required_core_components")
+        matched_evidence_keys: set[tuple] = set()
+        for component in assessment.get("components", []):
+            evidence_items = component.get("evidence", []) or []
+            if component.get("matched") and not evidence_items:
+                raise ValueError("every matched component must have evidence")
+            if component.get("source") not in {
+                "required_skill_names",
+                "preferred_skill_names",
+                "evaluation_dimensions",
+                "adjacent-skill rule",
+                "criterion description",
+                "criterion description fallback",
+            } and "linked requirement" not in str(component.get("source", "")):
+                raise ValueError("component source must identify a structured field or linked requirement")
+            if component.get("matched"):
+                for evidence in evidence_items:
+                    matched_evidence_keys.add(_evidence_key(evidence))
+        criterion_keys = {_evidence_key(item.model_dump(mode="json")) for item in self.evidence}
+        if criterion_keys and matched_evidence_keys and not criterion_keys.issubset(matched_evidence_keys):
+            raise ValueError("criterion evidence must belong to matched component evidence")
+
+
+def _evidence_key(item: dict[str, Any]) -> tuple:
+    return (
+        item.get("source_type"),
+        item.get("source_document_id"),
+        item.get("page_number"),
+        item.get("block_index"),
+        item.get("normalized_text") or item.get("exact_text"),
+    )
 
 
 class EligibilityResult(StrictBaseModel):

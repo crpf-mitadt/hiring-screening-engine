@@ -59,6 +59,10 @@ File-based evaluation uses the loaded `StructuredJD` object directly. Existing n
 `scoring_rubric` entries are not renamed, regenerated, reordered, or replaced by compatibility
 templates. Runtime validation compares each result with the source criterion, and component
 assessment metadata includes a stable hash of the source criterion definition.
+JD structuring post-processing checks rubric quality before writing `structured-jd.json`: mandatory
+requirement links are preserved or warned, required/core skills must trace to mandatory wording or a
+linked mandatory requirement, and contextual/helpful technologies are moved to `adjacent_skill_names`
+rather than being accepted as required/core.
 
 Technical-stack criteria distinguish:
 
@@ -77,6 +81,16 @@ The canonical structured field for this is `component_assessment`. It includes
 `supported_core_components`, `supported_controlled_equivalents`, `supported_adjacent_components`,
 `missing_core_components`, per-component source/origin, per-component evidence references, and the
 source criterion hash. Skill and leadership criteria must populate this object.
+Controlled-equivalent metadata is criterion-local: MySQL/PostgreSQL appears only when a criterion
+owns a database component through required skills, a linked database requirement, or its own explicit
+database definition. Criteria without database components have empty controlled-equivalent fields
+even if the candidate has database evidence elsewhere.
+
+Mixed criteria, such as experience plus SQL/MySQL, are split into independently evaluated
+components. Experience duration/relevance, SQL, MySQL, and any controlled database equivalent each
+carry their own source, classification, matched status, evidence, explanation, and missing state.
+The criterion score is computed from those independent components before mapping to the approved
+discrete fractions.
 
 Soft-skill criteria use only their own `evaluation_dimensions`. Technical tools such as React.js,
 JavaScript, HTML, CSS, and databases do not directly satisfy communication, ownership, or
@@ -121,3 +135,6 @@ block index, and normalized or exact text. If one source block supports multiple
 object appears once and its notes retain the matched facts. The report also includes completeness
 diagnostics for required/core component counts, adjacent component counts, deduplicated source count,
 and penalties.
+Adjacent components contribute at reduced weight in completeness diagnostics. Per-criterion
+diagnostics show total and supported required/core components, adjacent components, controlled
+equivalent components, supported controlled equivalents, and deduplicated source counts.

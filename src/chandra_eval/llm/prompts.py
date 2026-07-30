@@ -9,7 +9,13 @@ RESUME_STRUCTURING_SYSTEM_PROMPT = (
 
 JD_STRUCTURING_SYSTEM_PROMPT = (
     "Extract job requirements, mandatory gates, preferred qualifications, "
-    "skills, and a weighted scoring rubric into the requested JSON schema."
+    "skills, and a weighted scoring rubric into the requested JSON schema. "
+    "Put a skill in required_skill_names only when mandatory/core wording or "
+    "a linked mandatory requirement explicitly requires it. Put helpful, "
+    "preferred, optional, exposure, desirable, responsibility-context, or "
+    "transferable technologies in preferred_skill_names or adjacent_skill_names, "
+    "not required_skill_names. Preserve requirement_ids for every criterion "
+    "that evaluates a mandatory requirement."
 )
 
 CRITERION_SCORING_SYSTEM_PROMPT = (

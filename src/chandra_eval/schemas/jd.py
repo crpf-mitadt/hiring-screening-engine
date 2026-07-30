@@ -55,6 +55,7 @@ class ScoringCriterion(StrictBaseModel):
     requirement_ids: list[str] = Field(default_factory=list)
     required_skill_names: list[str] = Field(default_factory=list)
     preferred_skill_names: list[str] = Field(default_factory=list)
+    adjacent_skill_names: list[str] = Field(default_factory=list)
     evaluation_dimensions: list[str] = Field(default_factory=list)
 
 

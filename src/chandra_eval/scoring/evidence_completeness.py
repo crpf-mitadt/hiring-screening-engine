@@ -15,8 +15,7 @@ def evidence_completeness(
     if not evaluations:
         return 0.0
     diagnostics = evidence_completeness_diagnostics(evaluations, date_warnings=date_warnings, warnings=warnings)
-    supported = diagnostics["criteria_with_supported_evidence"]
-    criterion_score = supported / len(evaluations)
+    criterion_score = diagnostics["component_support_score"]
     if criterion_score == 0:
         return 0.0
     date_score = 0.5 if date_warnings else 1.0
@@ -37,6 +36,8 @@ def evidence_completeness_diagnostics(
     supported_core = 0
     total_adjacent = 0
     supported_adjacent = 0
+    per_criterion: list[dict[str, Any]] = []
+    criterion_scores: list[float] = []
     for evaluation in evaluations:
         in_scope_supported = [
             evidence
@@ -56,20 +57,60 @@ def evidence_completeness_diagnostics(
                 )
             )
         components = evaluation.component_assessment.get("components", [])
+        criterion_core = 0
+        criterion_supported_core = 0
+        criterion_adjacent = 0
+        criterion_supported_adjacent = 0
         for component in components:
             component_class = component.get("class", "")
             if component_class in {"required/core", "preferred/core"}:
                 total_core += 1
+                criterion_core += 1
                 if component.get("matched"):
                     supported_core += 1
+                    criterion_supported_core += 1
             elif component_class == "adjacent/transferable":
                 total_adjacent += 1
+                criterion_adjacent += 1
                 if component.get("matched"):
                     supported_adjacent += 1
+                    criterion_supported_adjacent += 1
+        denominator = criterion_core + (criterion_adjacent * 0.5)
+        if denominator:
+            score = (criterion_supported_core + (criterion_supported_adjacent * 0.5)) / denominator
+        else:
+            score = 1.0 if in_scope_supported else 0.0
+        criterion_scores.append(score)
+        per_criterion.append(
+            {
+                "criterion_id": evaluation.criterion_id,
+                "total_required_components": criterion_core,
+                "supported_required_components": criterion_supported_core,
+                "total_adjacent_components": criterion_adjacent,
+                "supported_adjacent_components": criterion_supported_adjacent,
+                "controlled_equivalent_components": evaluation.component_assessment.get("controlled_equivalent_components", []),
+                "supported_controlled_equivalents": evaluation.component_assessment.get("supported_controlled_equivalents", []),
+                "deduplicated_source_count": len(
+                    {
+                        (
+                            evidence.source_type,
+                            evidence.source_document_id,
+                            evidence.page_number,
+                            evidence.block_index,
+                            evidence.normalized_text or evidence.exact_text,
+                        )
+                        for evidence in in_scope_supported
+                    }
+                ),
+                "component_support_score": round(score, 3),
+            }
+        )
     warning_text = " ".join(warnings or []).lower()
     return {
         "total_criteria": len(evaluations),
         "criteria_with_supported_evidence": supported,
+        "component_support_score": round(sum(criterion_scores) / len(criterion_scores), 3) if criterion_scores else 0.0,
+        "per_criterion": per_criterion,
         "total_required_core_components": total_core,
         "supported_required_core_components": supported_core,
         "total_adjacent_components_considered": total_adjacent,

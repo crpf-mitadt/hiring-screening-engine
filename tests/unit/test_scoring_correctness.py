@@ -842,6 +842,173 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertNotIn("Proactive Problem Solving", str(result_by_id["crit_04"].model_dump()))
         self.assertIn("Experience & Domain Fit", report.strengths)
 
+    def test_controlled_database_equivalents_stay_with_database_owner(self) -> None:
+        db_text = "Optimized PostgreSQL/MySQL database operations for reliability and performance."
+        frontend_text = "Built React.js dashboards with HTML and CSS."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["MySQL", "PostgreSQL", "React.js", "HTML", "CSS"],
+                "experience": [
+                    {
+                        "title": "Software Developer I",
+                        "start_date": "2024-01",
+                        "end_date": "Present",
+                        "responsibilities": [
+                            "Full-stack logistics systems with REST APIs.",
+                            db_text,
+                            frontend_text,
+                        ],
+                        "evidence": [
+                            _evidence("Software Developer I").model_dump(mode="json"),
+                            _evidence("January 2024 - Present").model_dump(mode="json"),
+                            _evidence("Full-stack logistics systems with REST APIs.").model_dump(mode="json"),
+                            _evidence(db_text).model_dump(mode="json"),
+                            _evidence(frontend_text).model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+        jd = self._live_shape_jd()
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        by_id = {item.criterion_id: item for item in report.criterion_evaluations}
+
+        self.assertEqual(by_id["crit_01"].component_assessment["controlled_equivalent_components"], [])
+        self.assertEqual(by_id["crit_01"].component_assessment["supported_controlled_equivalents"], [])
+        self.assertEqual(by_id["crit_03"].component_assessment["controlled_equivalent_components"], [])
+        self.assertEqual(by_id["crit_03"].component_assessment["supported_controlled_equivalents"], [])
+        self.assertIn("SQL", by_id["crit_02"].component_assessment["supported_core_components"])
+        self.assertIn("MySQL", by_id["crit_02"].component_assessment["supported_core_components"])
+        self.assertIn("PostgreSQL", by_id["crit_02"].component_assessment["supported_controlled_equivalents"])
+
+    def test_mixed_experience_database_criterion_uses_independent_components(self) -> None:
+        jd = self._mixed_experience_database_jd()
+
+        def score(responsibilities: list[str], *, start_date: str = "2024-01", title: str = "Software Developer I"):
+            candidate = CandidateProfile.model_validate(
+                {
+                    "candidate_id": "candidate",
+                    "source_document_id": "resume",
+                    "experience": [
+                        {
+                            "title": title,
+                            "start_date": start_date,
+                            "end_date": "Present",
+                            "responsibilities": responsibilities,
+                            "evidence": [
+                                _evidence(title).model_dump(mode="json"),
+                                _evidence(f"{start_date} - Present").model_dump(mode="json"),
+                                *[_evidence(text).model_dump(mode="json") for text in responsibilities],
+                            ],
+                        }
+                    ],
+                }
+            )
+            return evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+
+        full = score(["Full-stack systems with REST APIs.", "Optimized MySQL and SQL database operations."])
+        no_database = score(["Full-stack systems with REST APIs."])
+        no_experience = score(["Optimized MySQL and SQL database operations."], start_date="2026-01")
+        unrelated = score(
+            ["Administrative scheduling.", "Optimized MySQL and SQL database operations."],
+            title="Administrative Coordinator",
+        )
+
+        self.assertEqual(full.match_fraction, 1)
+        self.assertEqual([item["term"] for item in full.component_assessment["components"]], ["Relevant experience duration/relevance", "SQL", "MySQL"])
+        self.assertLess(no_database.match_fraction, 1)
+        self.assertIn("SQL", no_database.missing_information)
+        self.assertIn("MySQL", no_database.missing_information)
+        self.assertLess(no_experience.match_fraction, 1)
+        self.assertIn("Relevant experience duration/relevance", no_experience.missing_information)
+        self.assertLess(unrelated.match_fraction, 1)
+        self.assertIn("Relevant experience duration/relevance", unrelated.missing_information)
+
+    def test_postgresql_satisfies_explicit_equivalent_database_component(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_db",
+                    category=RequirementCategory.SKILL,
+                    description="Experience with MySQL or similar enterprise databases.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="database",
+                    name="Database",
+                    category=RequirementCategory.SKILL,
+                    description="Database management",
+                    weight=100,
+                    requirement_ids=["req_db"],
+                    required_skill_names=["SQL/database management"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "responsibilities": ["Implemented PostgreSQL database operations."],
+                        "evidence": [_evidence("Implemented PostgreSQL database operations.").model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        criterion = report.criterion_evaluations[0]
+
+        self.assertEqual(report.eligibility.requirement_statuses["req_db"], "met")
+        self.assertEqual(criterion.match_fraction, 1)
+        self.assertEqual(criterion.component_assessment["supported_controlled_equivalents"], ["PostgreSQL"])
+
+    def test_preferred_skill_components_are_not_replaced_by_description(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="soft",
+                    name="Soft Skills & Proactivity",
+                    category=RequirementCategory.OTHER,
+                    description="Communication, ownership, and proactive approach.",
+                    weight=100,
+                    preferred_skill_names=["Proactive Problem Solving"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "responsibilities": ["Worked with a team on routine delivery."],
+                        "evidence": [_evidence("Worked with a team on routine delivery.").model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        criterion = report.criterion_evaluations[0]
+
+        self.assertEqual(criterion.component_assessment["required_core_components"], ["Proactive Problem Solving"])
+        self.assertEqual(criterion.missing_information, ["Proactive Problem Solving"])
+        self.assertNotIn("Communication, ownership", str(criterion.component_assessment))
+
     def test_met_experience_requirement_uses_explanation_not_ambiguity(self) -> None:
         candidate = CandidateProfile.model_validate(
             {
@@ -1071,6 +1238,98 @@ class ScoringCorrectnessTests(unittest.TestCase):
                     weight=10,
                     preferred_skill_names=["DevOps", "SEO", "UI/UX"],
                 ),
+            ],
+        )
+
+    def _live_shape_jd(self) -> StructuredJD:
+        return StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_tech_01",
+                    category=RequirementCategory.SKILL,
+                    description="Experience with PHP, Laravel and WordPress.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                ),
+                JDRequirement(
+                    requirement_id="req_exp_01",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                ),
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="crit_01",
+                    name="Core Technical Stack",
+                    category=RequirementCategory.SKILL,
+                    description="PHP, Laravel, WordPress, JavaScript",
+                    weight=40,
+                    requirement_ids=["req_tech_01"],
+                    required_skill_names=["PHP", "Laravel", "WordPress", "JavaScript"],
+                ),
+                ScoringCriterion(
+                    criterion_id="crit_02",
+                    name="Experience & Database Management",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Relevant years of experience and MySQL/SQL knowledge.",
+                    weight=30,
+                    requirement_ids=["req_exp_01"],
+                    required_skill_names=["SQL", "MySQL"],
+                ),
+                ScoringCriterion(
+                    criterion_id="crit_03",
+                    name="Frontend & UI/UX",
+                    category=RequirementCategory.SKILL,
+                    description="Frontend implementation and UI/UX.",
+                    weight=20,
+                    required_skill_names=["HTML", "CSS", "React.js", "UI/UX Design"],
+                ),
+                ScoringCriterion(
+                    criterion_id="crit_04",
+                    name="Soft Skills & Proactivity",
+                    category=RequirementCategory.OTHER,
+                    description="Communication, ownership, and proactive approach.",
+                    weight=10,
+                    preferred_skill_names=["Proactive Problem Solving"],
+                ),
+            ],
+        )
+
+    def _mixed_experience_database_jd(self) -> StructuredJD:
+        return StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_exp",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="exp-db",
+                    name="Experience & Database Management",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Relevant years of experience and MySQL/SQL knowledge.",
+                    weight=100,
+                    requirement_ids=["req_exp"],
+                    required_skill_names=["SQL", "MySQL"],
+                )
             ],
         )
 
