@@ -23,6 +23,7 @@ def write_csv_report(report: CandidateEvaluationReport, path: Path) -> Path:
                 "evidence_found",
                 "missing_information",
                 "verification_needed",
+                "report_warnings",
             ],
         )
         writer.writeheader()
@@ -40,6 +41,7 @@ def write_csv_report(report: CandidateEvaluationReport, path: Path) -> Path:
                     "evidence_found": " | ".join(item.evidence_found),
                     "missing_information": " | ".join(item.missing_information),
                     "verification_needed": " | ".join(item.verification_needed),
+                    "report_warnings": " | ".join(report.warnings),
                 }
             )
     return path

@@ -148,6 +148,12 @@ For resume PDFs, omit `--ocr-pages` to process every page. Use `--ocr-pages N` o
 cap. A cap that processes fewer than all source pages is marked partial and stops before scoring
 unless `--allow-partial-evaluation` is passed.
 
+OCR page completion is not inferred from page count alone. `ocr/metadata.json` records attempted,
+completed, truncated, and failed page numbers. A Chandra page with `finish_reason=length` is
+truncated and is retried once up to `CHANDRA_OCR_RETRY_MAX_TOKENS`. If any requested page remains
+truncated or failed, ordinary scoring stops before resume structuring unless
+`--allow-partial-evaluation` is explicitly supplied.
+
 Output layout:
 
 ```text
@@ -167,16 +173,23 @@ The terminal and summary outputs do not include raw prompts, raw model responses
 phone numbers, or home addresses. They retain the decision-support disclaimer and
 `human_review_required=true`.
 
-For the July 29, 2026 Tyrone retest of the Research Assistant AI CoE pair, avoid the incomplete
-one-page cache:
+For the July 30, 2026 Tyrone retest of the Research Assistant AI CoE pair, avoid the incomplete or
+truncated cache and keep raw responses disabled:
 
 ```bash
 PIPELINE_DEBUG_RAW_RESPONSES=false \
+GEMMA_RESUME_MAX_TOKENS=16384 \
+CHANDRA_OCR_RETRY_MAX_TOKENS=8192 \
 uv run chandra-eval match \
   --jd "inputs/jds/Job description - Research Assistant AI CoE.docx" \
   --resume "inputs/resumes/VijaySamuelHeHimResume.pdf" \
   --output-root outputs/matches \
-  --force
+  --force \
+  --ocr-max-tokens 8192
 ```
 
-Do not add `--ocr-pages` for that retest; all resume pages must be processed.
+Do not add `--ocr-pages` for that retest; all resume pages must be processed. After the run, inspect
+`ocr/metadata.json` and verify `truncated_page_numbers` and `failed_page_numbers` are empty,
+`completed_page_numbers` contains every requested page, the structured experience dates include
+the visible historical role ranges, MBA International Business does not satisfy the technical-degree
+requirement, and Digital/Digitization text does not match Git.

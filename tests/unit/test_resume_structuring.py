@@ -125,6 +125,121 @@ class ResumeStructuringTests(unittest.TestCase):
                     mock_llm=True,
                 )
 
+    def test_recovers_role_dates_from_nearby_heading_blocks_without_leakage(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ocr_dir = root / "ocr"
+            ocr_dir.mkdir()
+            (ocr_dir / "source-map.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "page_number": 1,
+                            "block_index": 1,
+                            "data_label": "Text",
+                            "exact_text": "Global Director",
+                            "normalized_text": "Global Director",
+                        },
+                        {
+                            "page_number": 1,
+                            "block_index": 2,
+                            "data_label": "Text",
+                            "exact_text": "05/2021 - 08/2023",
+                            "normalized_text": "05/2021 - 08/2023",
+                        },
+                        {
+                            "page_number": 1,
+                            "block_index": 3,
+                            "data_label": "Text",
+                            "exact_text": "GBS India Site Lead",
+                            "normalized_text": "GBS India Site Lead",
+                        },
+                        {
+                            "page_number": 1,
+                            "block_index": 4,
+                            "data_label": "Text",
+                            "exact_text": "07/2018 - 04/2021",
+                            "normalized_text": "07/2018 - 04/2021",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "candidate_id": "candidate-dates",
+                "source_document_id": "ocr",
+                "extraction_method": "live_gemma",
+                "experience": [
+                    {"title": "Global Director", "start_date": None, "end_date": None},
+                    {"title": "GBS India Site Lead", "start_date": None, "end_date": None},
+                ],
+            }
+
+            candidate = structure_resume_from_ocr(
+                ocr_dir,
+                candidate_id="candidate-dates",
+                output_path=root / "candidate.json",
+                gemma_client=FakeGemmaClient([_message_payload(json.dumps(payload))]),
+            )
+
+            self.assertEqual(candidate.experience[0].start_date, "2021-05")
+            self.assertEqual(candidate.experience[0].end_date, "2023-08")
+            self.assertEqual(candidate.experience[1].start_date, "2018-07")
+            self.assertEqual(candidate.experience[1].end_date, "2021-04")
+            self.assertEqual(candidate.experience[0].evidence[-1].block_index, 2)
+            self.assertEqual(candidate.experience[1].evidence[-1].block_index, 4)
+
+    def test_ambiguous_three_component_date_is_repaired_from_nearby_ocr_or_left_unknown(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ocr_dir = root / "ocr"
+            ocr_dir.mkdir()
+            (ocr_dir / "source-map.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "page_number": 1,
+                            "block_index": 1,
+                            "data_label": "Text",
+                            "exact_text": "Program Manager",
+                            "normalized_text": "Program Manager",
+                        },
+                        {
+                            "page_number": 1,
+                            "block_index": 2,
+                            "data_label": "Text",
+                            "exact_text": "08 / 2017 - 07 / 2018",
+                            "normalized_text": "08 / 2017 - 07 / 2018",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = {
+                "candidate_id": "candidate-dates",
+                "source_document_id": "ocr",
+                "extraction_method": "live_gemma",
+                "experience": [
+                    {
+                        "title": "Program Manager",
+                        "start_date": "08/07/17",
+                        "end_date": "2018-07",
+                        "start_date_precision": "month",
+                    }
+                ],
+            }
+
+            candidate = structure_resume_from_ocr(
+                ocr_dir,
+                candidate_id="candidate-dates",
+                output_path=root / "candidate.json",
+                gemma_client=FakeGemmaClient([_message_payload(json.dumps(payload))]),
+            )
+
+            self.assertEqual(candidate.experience[0].start_date, "2017-08")
+            self.assertEqual(candidate.experience[0].start_date_precision.value, "month")
+            self.assertNotIn("08/07/17", candidate.experience[0].start_date or "")
+
     def test_empty_schema_response_retries_with_response_format(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

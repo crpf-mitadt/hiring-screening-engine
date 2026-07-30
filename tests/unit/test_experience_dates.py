@@ -75,6 +75,26 @@ class ExperienceDateTests(unittest.TestCase):
         self.assertEqual(len(duration.uncertain_ranges), 1)
         self.assertIn("ambiguous end_date", duration.date_warnings[0])
 
+    def test_three_component_slash_date_is_not_month_precision(self) -> None:
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate-dates",
+                "source_document_id": "ocr",
+                "experience": [
+                    {
+                        "start_date": "08/07/17",
+                        "end_date": "2018-07",
+                        "start_date_precision": "month",
+                    }
+                ],
+            }
+        )
+
+        entry = candidate.experience[0]
+        self.assertEqual(entry.start_date, "08/07/17")
+        self.assertEqual(entry.start_date_precision, DatePrecision.UNKNOWN)
+        self.assertIn("Ambiguous start_date", entry.warnings[0])
+
     def test_overlapping_ranges_are_not_double_counted(self) -> None:
         candidate = CandidateProfile.model_validate(
             {

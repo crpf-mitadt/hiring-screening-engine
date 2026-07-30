@@ -1,6 +1,7 @@
 """Resume structuring from Chandra OCR artifacts."""
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from chandra_eval.exceptions import (
     StructuredExtractionError,
 )
 from chandra_eval.ingestion.resume_document import (
+    OcrBlock,
     OcrDocument,
     evidence_from_block,
     load_candidate_profile,
@@ -27,7 +29,7 @@ from chandra_eval.llm.prompts import RESUME_STRUCTURING_SYSTEM_PROMPT
 from chandra_eval.llm.response import extract_assistant_text, safe_response_metadata
 from chandra_eval.llm.structured_output import parse_json_object
 from chandra_eval.safety.candidate_sanitizer import build_scoring_safe_profile
-from chandra_eval.schemas.common import ExtractionMethod
+from chandra_eval.schemas.common import DatePrecision, ExtractionMethod
 from chandra_eval.schemas.resume import CandidateProfile, ExperienceEntry
 
 
@@ -60,6 +62,7 @@ def structure_resume_from_ocr(
 
     candidate.candidate_id = candidate_id
     candidate.source_document_id = ocr_document.source_document_id
+    candidate = _recover_experience_dates(candidate, ocr_document)
     candidate.scoring_safe_profile = build_scoring_safe_profile(candidate)
     write_candidate_profile(candidate, output_path)
     return candidate
@@ -269,11 +272,16 @@ def _resume_messages(
                 "lists only when the source contains no items for a collection. Use an unknown enum "
                 "only when that exact enum member exists in the schema. "
                 "For each experience entry, preserve visibly associated role dates from headings, "
-                "nearby lines, and date blocks as well as responsibility paragraphs. Capture common "
-                "date formats such as MM/YYYY, MM-YYYY, MMM YYYY, Month YYYY, YYYY, Present, and "
-                "Current. Use start_date_precision/end_date_precision='month' for month/year dates, "
+                "nearby lines, adjacent blocks, and date blocks as well as responsibility paragraphs. "
+                "When a role heading is followed by a date range line, attach that date range to that "
+                "same role only. Do not copy dates from neighboring roles. Capture common "
+                "date formats such as MM/YYYY, MM-YYYY, YYYY-MM, MMM YYYY, Month YYYY, YYYY, Present, "
+                "and Current, including spaces around separators. Use "
+                "start_date_precision/end_date_precision='month' for month/year dates, "
                 "and set currently_active=true when the end date is Present or Current. Include the "
                 "date line as evidence for the role when page_number and block_index are available. "
+                "Do not interpret ambiguous three-component slash dates such as 08/07/17 unless the "
+                "nearby OCR context deterministically supplies a month/year range. "
                 "Every extracted job-related fact should include EvidenceRef entries "
                 "using page_number and block_index from the OCR lines where possible. "
                 f"{mode}\n"
@@ -431,6 +439,155 @@ def _persist_resume_failure_debug(
             json.dumps(raw_payloads, indent=2),
             encoding="utf-8",
         )
+
+
+_DATE_TOKEN = r"(?:\d{1,2}\s*[-/]\s*\d{4}|\d{4}\s*-\s*\d{1,2}|[A-Za-z]{3,9}\s+\d{4}|\d{4}|Present|Current|Now)"
+_DATE_RANGE_RE = re.compile(
+    rf"(?P<start>{_DATE_TOKEN})\s*(?:-|–|—|to)\s*(?P<end>{_DATE_TOKEN})",
+    flags=re.IGNORECASE,
+)
+
+
+def _recover_experience_dates(candidate: CandidateProfile, ocr_document: OcrDocument) -> CandidateProfile:
+    if not candidate.experience or not ocr_document.blocks:
+        return candidate
+    recovered: list[ExperienceEntry] = []
+    for entry in candidate.experience:
+        recovered.append(_recover_entry_dates(entry, ocr_document))
+    candidate.experience = recovered
+    candidate.extraction_warnings = sorted(
+        set(
+            [
+                *candidate.extraction_warnings,
+                *[
+                    warning
+                    for entry in recovered
+                    for warning in entry.warnings
+                    if "date" in warning.lower() or "truncated" in warning.lower()
+                ],
+            ]
+        )
+    )
+    return candidate
+
+
+def _recover_entry_dates(entry: ExperienceEntry, ocr_document: OcrDocument) -> ExperienceEntry:
+    needs_repair = (
+        entry.start_date is None
+        or (entry.end_date is None and not entry.currently_active)
+        or entry.start_date_precision == DatePrecision.UNKNOWN
+        or entry.end_date_precision == DatePrecision.UNKNOWN and entry.end_date is not None
+    )
+    if not needs_repair:
+        return entry
+    anchors = _entry_anchor_blocks(entry, ocr_document)
+    if not anchors:
+        return entry
+    candidate_range = _nearest_date_range(anchors, ocr_document)
+    if candidate_range is None:
+        return _entry_with_warning(entry, "Role date remains uncertain; no nearby OCR date range was found.")
+    start, end, block = candidate_range
+    updates = {
+        "start_date": start,
+        "end_date": end,
+        "currently_active": end is None,
+        "start_date_precision": DatePrecision.MONTH if start and len(start) == 7 else DatePrecision.YEAR,
+        "end_date_precision": DatePrecision.UNKNOWN if end is None else (DatePrecision.MONTH if len(end) == 7 else DatePrecision.YEAR),
+        "warnings": [
+            warning
+            for warning in entry.warnings
+            if "Ambiguous start_date" not in warning and "Ambiguous end_date" not in warning
+        ],
+    }
+    evidence = list(entry.evidence)
+    if not any(item.page_number == block.page_number and item.block_index == block.block_index for item in evidence):
+        evidence.append(evidence_from_block(block, ocr_document.source_document_id))
+    updates["evidence"] = evidence
+    return entry.model_copy(update=updates)
+
+
+def _entry_with_warning(entry: ExperienceEntry, warning: str) -> ExperienceEntry:
+    return entry.model_copy(update={"warnings": sorted(set([*entry.warnings, warning]))})
+
+
+def _entry_anchor_blocks(entry: ExperienceEntry, ocr_document: OcrDocument) -> list[OcrBlock]:
+    by_location = {(block.page_number, block.block_index): block for block in ocr_document.blocks}
+    anchors: list[OcrBlock] = []
+    for evidence in entry.evidence:
+        block = by_location.get((evidence.page_number, evidence.block_index))
+        if block is not None:
+            anchors.append(block)
+    needles = [
+        _anchor_text(entry.title),
+        _anchor_text(entry.organization),
+    ]
+    for block in ocr_document.blocks:
+        normalized = block.normalized_text.lower()
+        if any(needle and needle in normalized for needle in needles):
+            anchors.append(block)
+    return _dedupe_blocks(anchors)
+
+
+def _anchor_text(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def _nearest_date_range(anchors: list[OcrBlock], ocr_document: OcrDocument) -> tuple[str, str | None, OcrBlock] | None:
+    best: tuple[int, int, str, str | None, OcrBlock] | None = None
+    blocks_by_page: dict[int, list[OcrBlock]] = {}
+    for block in ocr_document.blocks:
+        blocks_by_page.setdefault(block.page_number, []).append(block)
+    for anchor in anchors:
+        for block in blocks_by_page.get(anchor.page_number, []):
+            distance = block.block_index - anchor.block_index
+            if distance < -1 or distance > 4:
+                continue
+            parsed = _extract_date_range(block.normalized_text)
+            if parsed is None:
+                continue
+            start, end = parsed
+            ranking = (abs(distance), 0 if distance >= 0 else 1, start, end, block)
+            if best is None or ranking[:4] < best[:4]:
+                best = ranking
+    if best is None:
+        return None
+    return best[2], best[3], best[4]
+
+
+def _extract_date_range(text: str) -> tuple[str, str | None] | None:
+    match = _DATE_RANGE_RE.search(text)
+    if not match:
+        return None
+    start = _normalize_date_token(match.group("start"))
+    end = _normalize_date_token(match.group("end"))
+    if start is None or end == "AMBIGUOUS":
+        return None
+    return start, None if end == "CURRENT" else end
+
+
+def _normalize_date_token(value: str) -> str | None:
+    text = re.sub(r"\s*([-/])\s*", r"\1", value.strip())
+    lowered = text.lower().strip(".")
+    if lowered in {"present", "current", "now"}:
+        return "CURRENT"
+    if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", text):
+        return "AMBIGUOUS"
+    parsed = ExperienceEntry(start_date=text).start_date
+    return parsed
+
+
+def _dedupe_blocks(blocks: list[OcrBlock]) -> list[OcrBlock]:
+    output: list[OcrBlock] = []
+    seen: set[tuple[int, int]] = set()
+    for block in blocks:
+        key = (block.page_number, block.block_index)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(block)
+    return output
 
 
 def _mock_candidate_profile(ocr_document: OcrDocument, candidate_id: str) -> CandidateProfile:

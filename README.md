@@ -145,6 +145,9 @@ only; a qualified human reviewer must review the evidence before any employment 
 Raw resume PDFs are OCR'd as full documents by default. `--ocr-pages` is an explicit page cap, not
 the default. Partial OCR fails before scoring unless `--allow-partial-evaluation` is passed; allowed
 partial runs force eligibility `REVIEW`, reduce evidence completeness, and add prominent warnings.
+OCR metadata distinguishes attempted, completed, truncated, and failed pages. A page ending with
+`finish_reason=length` is retried with the bounded Chandra retry token budget and is never treated
+as complete merely because the page was attempted.
 
 Private raw Chandra and Gemma model responses are not persisted unless
 `PIPELINE_DEBUG_RAW_RESPONSES=true`. Normalized OCR HTML, metadata, document JSON, and source maps

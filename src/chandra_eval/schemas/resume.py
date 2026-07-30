@@ -72,9 +72,12 @@ def _normalize_resume_date(value: Any) -> tuple[str | None, DatePrecision, bool]
     text = str(value).strip()
     if not text:
         return None, DatePrecision.UNKNOWN, False
+    text = re.sub(r"\s*([-/])\s*", r"\1", text)
     lowered = text.lower().strip(".")
     if lowered in {"present", "current", "now"}:
         return None, DatePrecision.UNKNOWN, True
+    if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", text):
+        return text, DatePrecision.UNKNOWN, False
     match = re.fullmatch(r"(\d{4})(?:[-/](\d{1,2}))?", text)
     if match:
         year = int(match.group(1))
@@ -155,13 +158,23 @@ class ExperienceEntry(StrictBaseModel):
         end, end_precision, active = _normalize_resume_date(output.get("end_date"))
         output["start_date"] = start
         output["end_date"] = end
-        if output.get("start_date_precision") in {None, "", DatePrecision.UNKNOWN, "unknown"}:
+        warnings = list(output.get("warnings") or [])
+        if start_precision == DatePrecision.UNKNOWN and start:
+            output["start_date_precision"] = DatePrecision.UNKNOWN
+            if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", start):
+                warnings.append(f"Ambiguous start_date was not normalized: {start}")
+        elif output.get("start_date_precision") in {None, "", DatePrecision.UNKNOWN, "unknown"}:
             output["start_date_precision"] = start_precision
         if active:
             output["currently_active"] = True
             output["end_date_precision"] = DatePrecision.UNKNOWN
+        elif end_precision == DatePrecision.UNKNOWN and end:
+            output["end_date_precision"] = DatePrecision.UNKNOWN
+            if re.fullmatch(r"\d{1,2}[-/]\d{1,2}[-/]\d{2,4}", end):
+                warnings.append(f"Ambiguous end_date was not normalized: {end}")
         elif output.get("end_date_precision") in {None, "", DatePrecision.UNKNOWN, "unknown"}:
             output["end_date_precision"] = end_precision
+        output["warnings"] = warnings
         return output
 
 

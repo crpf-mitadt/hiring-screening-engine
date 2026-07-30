@@ -3,11 +3,13 @@
 from uuid import uuid4
 
 from chandra_eval.scoring.eligibility import evaluate_eligibility
+from chandra_eval.scoring.education import evaluate_education_requirement
 from chandra_eval.scoring.evidence_completeness import evidence_completeness
 from chandra_eval.scoring.experience import calculate_experience_duration
 from chandra_eval.scoring.matching import (
     build_candidate_evidence_index,
     criterion_terms,
+    match_qualitative_experience,
     match_terms,
 )
 from chandra_eval.schemas.evaluation import (
@@ -73,11 +75,12 @@ def _score_criterion(
                         "One or more experience date ranges are ambiguous and may affect the minimum."
                     )
         else:
-            terms = criterion_terms(criterion, jd)
-            match = match_terms(terms, index)
+            match = match_qualitative_experience(criterion.description, index)
+            terms = match.terms
             fraction = discrete_match_fraction(match.fraction)
             missing = match.missing_terms
             evidence = match.evidence
+            ambiguity = list(match.ambiguity)
             explanation = _match_explanation(match.matches, missing, ambiguity)
             return CriterionEvaluation(
                 criterion_id=criterion.criterion_id,
@@ -115,6 +118,30 @@ def _score_criterion(
             verification_needed=verification_needed,
             candidate_requirement=criterion.description,
             evidence_found=_evidence_found(evidence),
+        )
+
+    if criterion.category == RequirementCategory.EDUCATION:
+        education_match = evaluate_education_requirement(criterion.description, candidate.education)
+        fraction = 1.0 if education_match.matched else 0.0
+        explanation = (
+            "Matched education requirement components. "
+            + "; ".join(education_match.notes)
+            if education_match.matched
+            else "Education requirement components were not fully matched. "
+            + "; ".join([*education_match.missing, *education_match.ambiguity])
+        )
+        return CriterionEvaluation(
+            criterion_id=criterion.criterion_id,
+            match_fraction=fraction,
+            weighted_score=round(criterion.weight * fraction, 6),
+            status=_status(fraction, has_terms=True, ambiguous=bool(education_match.ambiguity)),
+            explanation=explanation,
+            evidence=education_match.evidence,
+            missing_information=education_match.missing,
+            ambiguity=education_match.ambiguity,
+            verification_needed=verification_needed,
+            candidate_requirement=criterion.description,
+            evidence_found=_evidence_found(education_match.evidence),
         )
 
     terms = criterion_terms(criterion, jd)

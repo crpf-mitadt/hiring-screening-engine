@@ -57,7 +57,7 @@ class OcrCoverageTests(unittest.TestCase):
             resume.write_bytes(b"fake pdf identity")
             calls: list[int | None] = []
 
-            def fake_ocr(path, client, page_count=None, max_tokens=4096):
+            def fake_ocr(path, client, page_count=None, max_tokens=4096, **kwargs):
                 calls.append(page_count)
                 count = 2 if page_count is None else page_count
                 return [
@@ -122,7 +122,7 @@ class OcrCoverageTests(unittest.TestCase):
             jd.write_text("Role\nRequired skills: Python", encoding="utf-8")
             resume.write_bytes(b"fake pdf identity")
 
-            def fake_ocr(path, client, page_count=None, max_tokens=4096):
+            def fake_ocr(path, client, page_count=None, max_tokens=4096, **kwargs):
                 return [
                     {
                         "choices": [
@@ -156,6 +156,106 @@ class OcrCoverageTests(unittest.TestCase):
             self.assertEqual(result.report.eligibility.status.value, "REVIEW")
             self.assertLessEqual(result.report.evidence_completeness, 0.5)
             self.assertIn("Partial resume OCR", summary)
+
+    def test_repeatedly_truncated_page_blocks_ordinary_scoring(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "matches"
+            jd = root / "jd.txt"
+            resume = root / "resume.pdf"
+            jd.write_text("Role\nRequired skills: Python", encoding="utf-8")
+            resume.write_bytes(b"fake pdf identity")
+
+            def fake_ocr(path, client, page_count=None, max_tokens=4096, **kwargs):
+                return [
+                    {
+                        "choices": [
+                            {
+                                "finish_reason": "length",
+                                "message": {
+                                    "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                },
+                            }
+                        ],
+                        "usage": {"completion_tokens": max_tokens},
+                    }
+                ]
+
+            with patch("chandra_eval.pipeline.match_workflow.pdf_page_count", return_value=1), patch(
+                "chandra_eval.pipeline.match_workflow.ocr_pdf_pages", side_effect=fake_ocr
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Truncated pages: 1"):
+                    run_match_workflow(
+                        MatchWorkflowOptions(
+                            jd_path=jd,
+                            resume_path=resume,
+                            output_root=output,
+                            mock_llm=True,
+                            skip_preflight=True,
+                            quiet=True,
+                        ),
+                        settings=Settings(match_output_root=output),
+                    )
+
+    def test_truncated_cache_artifact_is_regenerated_before_structuring(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "matches"
+            jd = root / "jd.txt"
+            resume = root / "resume.pdf"
+            jd.write_text("Role\nRequired skills: Python", encoding="utf-8")
+            resume.write_bytes(b"fake pdf identity")
+            calls = 0
+
+            def fake_ocr(path, client, page_count=None, max_tokens=4096, **kwargs):
+                nonlocal calls
+                calls += 1
+                finish_reason = "length" if calls == 1 else "stop"
+                return [
+                    {
+                        "choices": [
+                            {
+                                "finish_reason": finish_reason,
+                                "message": {
+                                    "content": '<p data-label="Text" data-bbox="[0,0,1,1]">Skills: Python</p>'
+                                },
+                            }
+                        ],
+                    }
+                ]
+
+            settings = Settings(match_output_root=output)
+            with patch("chandra_eval.pipeline.match_workflow.pdf_page_count", return_value=1), patch(
+                "chandra_eval.pipeline.match_workflow.ocr_pdf_pages", side_effect=fake_ocr
+            ):
+                result = run_match_workflow(
+                    MatchWorkflowOptions(
+                        jd_path=jd,
+                        resume_path=resume,
+                        output_root=output,
+                        mock_llm=True,
+                        skip_preflight=True,
+                        quiet=True,
+                        allow_partial_evaluation=True,
+                    ),
+                    settings=settings,
+                )
+                result = run_match_workflow(
+                    MatchWorkflowOptions(
+                        jd_path=jd,
+                        resume_path=resume,
+                        output_root=output,
+                        mock_llm=True,
+                        skip_preflight=True,
+                        quiet=True,
+                    ),
+                    settings=settings,
+                )
+
+            metadata = (result.run_dir / "ocr" / "metadata.json").read_text(encoding="utf-8")
+            self.assertEqual(calls, 2)
+            self.assertIn('"completed_page_numbers": [\n    1\n  ]', metadata)
+            self.assertIn('"truncated_page_numbers": []', metadata)
 
 
 if __name__ == "__main__":

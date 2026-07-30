@@ -59,8 +59,12 @@ python scripts/build_report.py outputs/live --json --csv --html
 - `metadata.json`
 
 Raw Chandra response bodies are written only when `PIPELINE_DEBUG_RAW_RESPONSES=true`. Metadata
-records `source_page_count`, `processed_page_count`, `processed_page_numbers`, `partial_ocr`, and
-whether raw responses were persisted.
+records `source_page_count`, `processed_page_count`, `processed_page_numbers`,
+`completed_page_numbers`, `truncated_page_numbers`, `failed_page_numbers`, `partial`,
+`partial_reason`, page-level warnings, retry attempts, and whether raw responses were persisted.
+Any page ending with `finish_reason=length` is truncated. The OCR caller retries that page once with
+the bounded `CHANDRA_OCR_RETRY_MAX_TOKENS` ceiling; if the retry still truncates, ordinary scoring
+stops before resume structuring.
 
 The primary end-to-end command is:
 
@@ -73,5 +77,6 @@ automation. Each run writes a unique match directory containing structured artif
 both JSON and Markdown summaries for later comparison.
 
 For PDF resumes, omitted `--ocr-pages` means all source pages. An explicit page cap is recorded as
-partial OCR when fewer than all source pages are processed; partial OCR cannot proceed to ordinary
-scoring unless explicitly allowed.
+partial OCR when fewer than all source pages are processed. A document is complete only when every
+requested page completed without truncation or failure; `source_page_count == processed_page_count`
+alone is not enough. Partial OCR cannot proceed to ordinary scoring unless explicitly allowed.

@@ -249,14 +249,17 @@ def run_match_workflow(
             settings.chandra_model,
             f"source-pages={source_page_count}",
             f"processed-pages={','.join(str(page) for page in processed_page_numbers)}",
-            str(options.ocr_max_tokens),
+            f"ocr-max-tokens={options.ocr_max_tokens}",
+            f"ocr-retry-max-tokens={settings.chandra_ocr_retry_max_tokens}",
+            "completion-aware-v2",
             f"debug-raw={settings.pipeline_debug_raw_responses}",
         )
+        ocr_cache_path = cache_root / ocr_cache_key
         ocr_dir = run_dir / "ocr"
         _cached_dir_stage(
             stages,
             "resume_ocr",
-            cache_root / ocr_cache_key,
+            ocr_cache_path,
             ocr_dir,
             read_cache,
             use_cache,
@@ -270,15 +273,36 @@ def run_match_workflow(
             ),
         )
         ocr_metadata = _load_ocr_metadata(ocr_dir)
-        if ocr_metadata.get("partial_ocr"):
-            warning = (
-                "Partial resume OCR: processed "
-                f"{ocr_metadata.get('processed_page_count')} of {ocr_metadata.get('source_page_count')} pages."
+        if _ocr_cache_requires_regeneration(ocr_metadata):
+            shutil.rmtree(ocr_dir)
+            _ocr_resume_pdf(
+                resume_path,
+                ocr_dir,
+                settings,
+                options,
+                source_page_count=source_page_count,
+                processed_page_numbers=processed_page_numbers,
             )
+            ocr_metadata = _load_ocr_metadata(ocr_dir)
+            if use_cache:
+                if ocr_cache_path.exists():
+                    shutil.rmtree(ocr_cache_path)
+                shutil.copytree(ocr_dir, ocr_cache_path)
+            stages.append(
+                StageRecord(
+                    "resume_ocr_cache_validation",
+                    "regenerated",
+                    0.0,
+                    warning="OCR cache/artifact was incomplete or lacked completion-aware metadata.",
+                )
+            )
+        if ocr_metadata.get("partial_ocr") or ocr_metadata.get("partial"):
+            warning = _ocr_partial_warning(ocr_metadata, document_label="resume")
             warnings.append(warning)
             if not (options.allow_partial_evaluation or settings.allow_partial_evaluation):
                 raise RuntimeError(
-                    f"{warning} Re-run without --ocr-pages or pass --allow-partial-evaluation."
+                    f"{warning} Re-run without --ocr-pages, raise --ocr-max-tokens/"
+                    "CHANDRA_OCR_RETRY_MAX_TOKENS, or pass --allow-partial-evaluation."
                 )
         ocr_input = ocr_dir
     else:
@@ -400,9 +424,15 @@ def _ingest_jd_stage(
         if options.mock_llm:
             raise
         ocr_dir = jd_text_path.parent / "jd-ocr"
-        responses = ocr_pdf_pages(jd_path, ChandraClient(settings), page_count=options.ocr_pages, max_tokens=options.ocr_max_tokens)
+        responses = ocr_pdf_pages(
+            jd_path,
+            ChandraClient(settings),
+            page_count=options.ocr_pages,
+            max_tokens=options.ocr_max_tokens,
+            retry_max_tokens=settings.chandra_ocr_retry_max_tokens,
+        )
         source_pages = pdf_page_count(jd_path)
-        write_ocr_artifacts(
+        metadata = write_ocr_artifacts(
             responses=responses,
             output_dir=ocr_dir,
             source_pdf=str(jd_path),
@@ -411,6 +441,8 @@ def _ingest_jd_stage(
             processed_page_numbers=list(range(1, len(responses) + 1)),
             debug_raw_responses=settings.pipeline_debug_raw_responses,
         )
+        if metadata.get("partial") and not (options.allow_partial_evaluation or settings.allow_partial_evaluation):
+            raise RuntimeError(_ocr_partial_warning(metadata, document_label="JD"))
         ocr_document = load_ocr_document(ocr_dir)
         jd_text_path.write_text(prompt_text_from_ocr(ocr_document), encoding="utf-8")
 
@@ -424,7 +456,13 @@ def _ocr_resume_pdf(
     source_page_count: int,
     processed_page_numbers: list[int],
 ) -> None:
-    responses = ocr_pdf_pages(resume_path, ChandraClient(settings), page_count=options.ocr_pages, max_tokens=options.ocr_max_tokens)
+    responses = ocr_pdf_pages(
+        resume_path,
+        ChandraClient(settings),
+        page_count=options.ocr_pages,
+        max_tokens=options.ocr_max_tokens,
+        retry_max_tokens=settings.chandra_ocr_retry_max_tokens,
+    )
     write_ocr_artifacts(
         responses=responses,
         output_dir=output_dir,
@@ -504,6 +542,55 @@ def _load_ocr_metadata(path: Path) -> dict:
     return json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
+def _ocr_cache_requires_regeneration(metadata: dict) -> bool:
+    if not metadata:
+        return True
+    if int(metadata.get("artifact_contract_version", 0) or 0) < 2:
+        return True
+    required = (
+        "partial",
+        "partial_reason",
+        "completed_page_numbers",
+        "truncated_page_numbers",
+        "failed_page_numbers",
+        "page_level_warnings",
+    )
+    if any(key not in metadata for key in required):
+        return True
+    return bool(metadata.get("truncated_page_numbers") or metadata.get("failed_page_numbers"))
+
+
+def _ocr_partial_warning(metadata: dict, *, document_label: str) -> str:
+    attempted = metadata.get("processed_page_count")
+    source = metadata.get("source_page_count")
+    completed = len(metadata.get("completed_page_numbers", []))
+    truncated = metadata.get("truncated_page_numbers", [])
+    failed = metadata.get("failed_page_numbers", [])
+    reason = metadata.get("partial_reason") or "OCR page extraction incomplete"
+    details = [f"Pages attempted: {attempted} / {source}", f"Pages completed: {completed} / {source}"]
+    if truncated:
+        details.append(f"Truncated pages: {', '.join(str(page) for page in truncated)}")
+    if failed:
+        details.append(f"Failed pages: {', '.join(str(page) for page in failed)}")
+    retry_summary = _ocr_retry_attempt_summary(metadata)
+    if retry_summary:
+        details.append(f"Retry attempts: {retry_summary}")
+    return f"Partial {document_label} OCR: {reason}. {'; '.join(details)}."
+
+
+def _ocr_retry_attempt_summary(metadata: dict) -> str:
+    parts: list[str] = []
+    for page in metadata.get("pages", []):
+        attempts = page.get("retry_attempts") or []
+        if len(attempts) <= 1:
+            continue
+        attempt_text = ", ".join(
+            f"{item.get('max_tokens')}:{item.get('finish_reason')}" for item in attempts
+        )
+        parts.append(f"page {page.get('page_number')} [{attempt_text}]")
+    return "; ".join(parts)
+
+
 def _apply_workflow_warnings(report: CandidateEvaluationReport, warnings: list[str]) -> CandidateEvaluationReport:
     eligibility = report.eligibility
     if warnings:
@@ -550,7 +637,11 @@ def _build_summary(
         "ocr_backend": "chandra",
         "chandra_model": settings.chandra_model,
         "gemma_model": settings.gemma_model,
-        "token_budgets": {"gemma_resume_max_tokens": settings.gemma_resume_max_tokens},
+        "token_budgets": {
+            "gemma_resume_max_tokens": settings.gemma_resume_max_tokens,
+            "chandra_ocr_initial_max_tokens": _ocr_page_coverage(run_dir).get("requested_max_tokens"),
+            "chandra_ocr_retry_max_tokens": settings.chandra_ocr_retry_max_tokens,
+        },
         "enable_thinking_false_requested": True,
         "response_format_usage": "json_object unless explicit API compatibility fallback",
         "ocr_page_coverage": _ocr_page_coverage(run_dir),
@@ -616,6 +707,7 @@ def _summary_markdown(summary: dict) -> str:
         f"* {stage['name']}: {stage['status']}"
         for stage in summary["stages"].values()
     )
+    ocr = summary["ocr_page_coverage"]
     return f"""# Resume-JD Match Summary
 
 Run ID: {summary['run_id']}
@@ -634,7 +726,10 @@ Models: Chandra={summary['chandra_model']}, Gemma={summary['gemma_model']}
 * Score: {summary['final_score']} / {summary['maximum_score']}
 * Evidence completeness: {summary['evidence_completeness']}
 * Human review required: {'yes' if summary['human_review_required'] else 'no'}
-* OCR page coverage: {summary['ocr_page_coverage'].get('processed_page_count')} / {summary['ocr_page_coverage'].get('source_page_count')}
+* OCR pages attempted: {ocr.get('processed_page_count')} / {ocr.get('source_page_count')}
+* OCR pages completed: {len(ocr.get('completed_page_numbers', []))} / {ocr.get('source_page_count')}
+* OCR truncated pages: {', '.join(str(page) for page in ocr.get('truncated_page_numbers', [])) or 'None'}
+* OCR failed pages: {', '.join(str(page) for page in ocr.get('failed_page_numbers', [])) or 'None'}
 
 ## Mandatory requirements
 
@@ -851,7 +946,18 @@ def _ocr_page_coverage(run_dir: Path) -> dict:
         "source_page_count": metadata.get("source_page_count"),
         "processed_page_count": metadata.get("processed_page_count"),
         "processed_page_numbers": metadata.get("processed_page_numbers", []),
+        "completed_page_numbers": metadata.get("completed_page_numbers", []),
+        "truncated_page_numbers": metadata.get("truncated_page_numbers", []),
+        "failed_page_numbers": metadata.get("failed_page_numbers", []),
+        "partial": metadata.get("partial", False),
+        "partial_reason": metadata.get("partial_reason"),
         "partial_ocr": metadata.get("partial_ocr", False),
+        "page_level_warnings": metadata.get("page_level_warnings", []),
+        "requested_max_tokens": metadata.get("requested_max_tokens"),
+        "page_retry_attempts": {
+            str(item.get("page_number")): item.get("retry_attempts", [])
+            for item in metadata.get("pages", [])
+        },
     }
 
 

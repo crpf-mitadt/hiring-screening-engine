@@ -1,7 +1,8 @@
 """Mandatory requirement gates."""
 
 from chandra_eval.scoring.experience import calculate_experience_duration
-from chandra_eval.scoring.matching import build_candidate_evidence_index, match_requirement
+from chandra_eval.scoring.education import evaluate_education_requirement
+from chandra_eval.scoring.matching import build_candidate_evidence_index, match_qualitative_experience, match_requirement
 from chandra_eval.schemas.evaluation import EligibilityResult, EligibilityStatus
 from chandra_eval.schemas.jd import RequirementCategory, StructuredJD
 from chandra_eval.schemas.resume import ScoringSafeProfile
@@ -45,10 +46,18 @@ def evaluate_eligibility(
                 ambiguous.append(requirement.requirement_id)
         elif requirement.category == RequirementCategory.EXPERIENCE:
             if requirement.minimum_value is None:
-                requirement_statuses[requirement.requirement_id] = "unclear"
-                detail["status"] = "unclear"
-                detail["ambiguity"].append("Experience requirement has no deterministic minimum value.")
-                ambiguous.append(requirement.requirement_id)
+                match = match_qualitative_experience(requirement.description, index)
+                if match.evidence:
+                    requirement_statuses[requirement.requirement_id] = "met"
+                    detail["status"] = "met"
+                    detail["evidence"] = [item.model_dump(mode="json") for item in match.evidence]
+                    detail["ambiguity"].append("Qualitative experience requirement assessed without a numeric duration.")
+                else:
+                    requirement_statuses[requirement.requirement_id] = "not_found"
+                    detail["status"] = "not_found"
+                    detail["missing_evidence"] = "No direct qualitative experience evidence found for this mandatory requirement."
+                    detail["ambiguity"].extend(match.ambiguity)
+                    ambiguous.append(requirement.requirement_id)
             elif duration.confirmed_months >= int(requirement.minimum_value):
                 requirement_statuses[requirement.requirement_id] = "met"
                 detail["status"] = "met"
@@ -70,7 +79,20 @@ def evaluate_eligibility(
                     f"{int(requirement.minimum_value)} required months."
                 )
                 failed.append(requirement.requirement_id)
-        elif requirement.category in {RequirementCategory.EDUCATION, RequirementCategory.LANGUAGE, RequirementCategory.DOMAIN}:
+        elif requirement.category == RequirementCategory.EDUCATION:
+            education_match = evaluate_education_requirement(requirement.description, candidate.education)
+            if education_match.matched:
+                requirement_statuses[requirement.requirement_id] = "met"
+                detail["status"] = "met"
+                detail["evidence"] = [item.model_dump(mode="json") for item in education_match.evidence]
+                detail["ambiguity"].extend(education_match.notes)
+            else:
+                requirement_statuses[requirement.requirement_id] = "not_found"
+                detail["status"] = "not_found"
+                detail["missing_evidence"] = "; ".join(education_match.missing)
+                detail["ambiguity"].extend(education_match.ambiguity or education_match.notes)
+                ambiguous.append(requirement.requirement_id)
+        elif requirement.category in {RequirementCategory.LANGUAGE, RequirementCategory.DOMAIN}:
             allowed_sources = {"education"} if requirement.category == RequirementCategory.EDUCATION else None
             match = match_requirement(
                 requirement.description,

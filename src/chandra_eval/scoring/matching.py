@@ -38,6 +38,7 @@ _STOPWORDS = {
 }
 
 _ALIASES: dict[str, tuple[str, ...]] = {
+    "git": ("github",),
     "ms office": ("excel", "word", "powerpoint", "presentation", "report"),
     "microsoft office": ("excel", "word", "powerpoint", "presentation", "report"),
     "ms excel": ("excel", "spreadsheet"),
@@ -189,6 +190,45 @@ def match_requirement(
     return match_terms(terms[: max(1, len(terms))], index, allowed_sources=allowed_sources)
 
 
+def match_qualitative_experience(description: str, index: list[EvidenceText]) -> MatchResult:
+    domain_terms = _dedupe_terms(_important_phrases(description))
+    candidates = [
+        item
+        for item in index
+        if item.source in {"experience", "project", "publication", "research"}
+        and _has_qualitative_experience_signal(item.normalized)
+    ]
+    if not candidates:
+        return MatchResult(
+            terms=domain_terms or [description],
+            matches=[],
+            missing_terms=[description],
+            evidence=[],
+            ambiguity=["No direct qualitative experience evidence was found."],
+        )
+    evidence: list[EvidenceRef] = []
+    matches: list[TermMatch] = []
+    missing: list[str] = []
+    terms = domain_terms or [description]
+    for term in terms:
+        term_match = _match_term(term, candidates)
+        if term_match.matched:
+            matches.append(term_match)
+            evidence.extend(term_match.evidence)
+        else:
+            missing.append(term)
+    if not evidence and candidates:
+        item = candidates[0]
+        evidence = _mark_evidence(item.evidence, "Direct qualitative experience signal")
+        matches.append(TermMatch(term=description, matched=bool(evidence), evidence=evidence))
+    return MatchResult(
+        terms=terms,
+        matches=matches,
+        missing_terms=missing,
+        evidence=_dedupe_evidence(evidence),
+    )
+
+
 def _append_education(items: list[EvidenceText], education: EducationEntry, evidence: list[EvidenceRef]) -> None:
     values = [
         education.degree_level.value,
@@ -234,10 +274,16 @@ def _match_term(term: str, index: list[EvidenceText], *, allowed_sources: set[st
             continue
         for option in options:
             if _contains_phrase(item.normalized, option):
+                supporting = _supporting_evidence(item.evidence, option)
+                if item.evidence and not supporting:
+                    continue
                 match = TermMatch(
                     term=term,
                     matched=True,
-                    evidence=_mark_evidence(item.evidence, f"Matched '{term}' via '{option}'"),
+                    evidence=_mark_evidence(
+                        supporting,
+                        f"Matched '{term}' via exact token/phrase '{option}'",
+                    ),
                     reason=f"matched '{option}' in {item.source}: {item.text}",
                 )
                 if match.evidence:
@@ -306,7 +352,7 @@ def _term_options(normalized: str) -> list[str]:
 def _contains_phrase(text: str, phrase: str) -> bool:
     if not phrase:
         return False
-    return phrase in text
+    return f" {phrase} " in f" {text} "
 
 
 def _phrase_relevant(phrase: str, seed_text: str) -> bool:
@@ -316,7 +362,7 @@ def _phrase_relevant(phrase: str, seed_text: str) -> bool:
         return True
     phrase_norm = normalize_token(phrase)
     seed_norm = normalize_token(seed_text)
-    return any(option in seed_norm for option in _term_options(phrase_norm))
+    return any(_contains_phrase(seed_norm, option) for option in _term_options(phrase_norm))
 
 
 def _important_phrases(text: str) -> list[str]:
@@ -375,6 +421,36 @@ def _mark_evidence(items: list[EvidenceRef], reason: str) -> list[EvidenceRef]:
         )
         for item in items
     ]
+
+
+def _supporting_evidence(items: list[EvidenceRef], option: str) -> list[EvidenceRef]:
+    return [
+        item
+        for item in items
+        if _contains_phrase(normalize_token(item.normalized_text or item.exact_text), option)
+    ]
+
+
+def _has_qualitative_experience_signal(text: str) -> bool:
+    has_domain = any(_contains_phrase(text, term) for term in ("ai", "ml", "machine learning", "artificial intelligence"))
+    has_direct_work = any(
+        _contains_phrase(text, term)
+        for term in (
+            "research",
+            "publication",
+            "internship",
+            "intern",
+            "developed",
+            "built",
+            "implemented",
+            "trained",
+            "model",
+            "machine learning",
+            "artificial intelligence",
+        )
+    )
+    broad_only = any(_contains_phrase(text, term) for term in ("operational reporting", "governance", "oversaw broad"))
+    return has_domain and has_direct_work and not broad_only
 
 
 def _synthetic_evidence(candidate: ScoringSafeProfile, text: str, source: str) -> list[EvidenceRef]:

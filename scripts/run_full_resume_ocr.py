@@ -20,7 +20,13 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     client = ChandraClient(settings)
     source_pages = pdf_page_count(args.pdf)
-    responses = ocr_pdf_pages(args.pdf, client, page_count=args.pages, max_tokens=args.max_tokens)
+    responses = ocr_pdf_pages(
+        args.pdf,
+        client,
+        page_count=args.pages,
+        max_tokens=args.max_tokens,
+        retry_max_tokens=settings.chandra_ocr_retry_max_tokens,
+    )
     metadata = write_ocr_artifacts(
         responses=responses,
         output_dir=args.output,
@@ -33,10 +39,14 @@ def main() -> None:
     print(f"OCR artifacts: {args.output}")
     print(f"Source pages: {metadata['source_page_count']}")
     print(f"Processed pages: {metadata['processed_page_count']}")
+    print(f"Completed pages: {len(metadata['completed_page_numbers'])}")
+    print(f"Truncated pages: {metadata['truncated_page_numbers']}")
+    print(f"Failed pages: {metadata['failed_page_numbers']}")
+    print(f"Retry max tokens: {settings.chandra_ocr_retry_max_tokens}")
     if metadata["raw_responses_persisted"]:
         print(f"Raw responses: {args.output / 'raw-responses.json'}")
     if metadata["partial_ocr"]:
-        print("WARNING: OCR output is partial because --pages capped the source PDF.")
+        print(f"WARNING: OCR output is partial: {metadata['partial_reason']}")
 
 
 if __name__ == "__main__":

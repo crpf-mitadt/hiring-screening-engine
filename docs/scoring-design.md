@@ -38,10 +38,22 @@ Criterion matching uses the scoring-safe profile only. It searches summary, educ
 titles and responsibilities, skills used, top-level skills, projects, publications, teaching,
 research, leadership, and achievements. Exact/normalized matches are combined with a narrow alias
 map for auditable business terms such as MS Office, CRM, lead generation, and campaign management.
+Term matching uses token or phrase boundaries. Short technical terms such as Git, R, C, Go, ML, AI,
+AWS, GCP, and SQL do not match inside unrelated words. `Git` may match `GitHub` only through the
+explicit alias map.
 
 Degree requirements are source-constrained: they may match only structured education entries and
 their evidence. Experience paragraphs, job titles, generic ML/AI mentions, leadership text, company
 names, and technical operations text cannot become degree evidence.
+Field-restricted degree requirements evaluate level and field separately. A master's degree in an
+unrelated field, executive education, certificates, leadership programs, and institution names do
+not satisfy a Computer Science, Artificial Intelligence, Data Science, or controlled closely related
+technical-field requirement.
+
+Qualitative experience requirements without a numeric duration are assessed from direct role,
+internship, project, research, or publication evidence. Numeric duration logic runs only when the JD
+specifies a minimum value. Generic operational references to AI/ML do not by themselves satisfy
+hands-on or research experience requirements.
 
 `accepted_evidence` describes later verification sources such as interviews, coding tests,
 transcripts, resumes, portfolios, or publication lists. It is not a candidate qualification and is
@@ -59,4 +71,5 @@ Evidence completeness is deterministic:
 2. If that fraction is zero, completeness is zero.
 3. Otherwise, compute `criteria_fraction * 0.70 + date_score * 0.15 + ocr_score * 0.15`.
 4. `date_score` is `1.0` when experience dates are complete and `0.5` when date warnings exist.
-5. `ocr_score` is `1.0` for full OCR coverage and `0.5` for explicitly allowed partial OCR.
+5. `ocr_score` is `1.0` only when every requested OCR page completed without truncation or failure;
+   it is `0.5` for explicitly allowed partial OCR.
