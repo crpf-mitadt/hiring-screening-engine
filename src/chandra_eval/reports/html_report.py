@@ -10,10 +10,15 @@ def write_html_report(report: CandidateEvaluationReport, path: Path) -> Path:
     rows = "\n".join(
         "<tr>"
         f"<td>{escape(item.criterion_id)}</td>"
+        f"<td>{escape(item.criterion_name)}</td>"
+        f"<td>{escape(item.category)}</td>"
+        f"<td>{item.weight:.3f}</td>"
+        f"<td>{escape('; '.join(item.requirement_ids) or 'None')}</td>"
         f"<td>{escape(item.status.value)}</td>"
         f"<td>{item.match_fraction:.3f}</td>"
         f"<td>{item.weighted_score:.3f}</td>"
         f"<td>{escape(item.explanation)}</td>"
+        f"<td>{escape(_component_summary(item.model_assessment or {}))}</td>"
         f"<td>{escape('; '.join(item.evidence_found) or 'No direct evidence recorded.')}</td>"
         f"<td>{escape('; '.join(item.verification_needed) or 'None')}</td>"
         "</tr>"
@@ -24,7 +29,7 @@ def write_html_report(report: CandidateEvaluationReport, path: Path) -> Path:
         f"<td>{escape(str(item.get('description', item.get('requirement_id', ''))))}</td>"
         f"<td>{escape(str(item.get('status', 'unclear')))}</td>"
         f"<td>{escape(_requirement_evidence_text(item))}</td>"
-        f"<td>{escape('; '.join(item.get('ambiguity', [])) or item.get('missing_evidence', '') or 'None')}</td>"
+        f"<td>{escape(item.get('explanation') or '; '.join(item.get('ambiguity', [])) or item.get('missing_evidence', '') or 'None')}</td>"
         "</tr>"
         for item in report.eligibility.requirement_details
     )
@@ -61,7 +66,7 @@ def write_html_report(report: CandidateEvaluationReport, path: Path) -> Path:
   </table>
   <h2>Criteria</h2>
   <table>
-    <thead><tr><th>Criterion</th><th>Status</th><th>Match</th><th>Score</th><th>Explanation</th><th>Evidence</th><th>Verification</th></tr></thead>
+    <thead><tr><th>Criterion</th><th>Name</th><th>Category</th><th>Weight</th><th>Linked Requirements</th><th>Status</th><th>Match</th><th>Score</th><th>Explanation</th><th>Components</th><th>Evidence</th><th>Verification</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
 </body>
@@ -84,3 +89,17 @@ def _requirement_evidence_text(item: dict) -> str:
         suffix = f" (page {page}, block {block})" if page is not None or block is not None else ""
         texts.append(f"{text[:160]}{suffix}")
     return "; ".join(texts)
+
+
+def _component_summary(assessment: dict) -> str:
+    parts: list[str] = []
+    for label, key in (
+        ("core", "supported_core_components"),
+        ("adjacent", "supported_adjacent_components"),
+        ("controlled", "controlled_equivalents_used"),
+        ("missing core", "missing_core_components"),
+    ):
+        values = assessment.get(key) or []
+        if values:
+            parts.append(f"{label}: {', '.join(values)}")
+    return " | ".join(parts) or "No in-scope components matched."

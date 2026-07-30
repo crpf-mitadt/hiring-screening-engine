@@ -658,6 +658,10 @@ def _build_summary(
         "criterion_scores": [
             {
                 "criterion_id": item.criterion_id,
+                "criterion_name": item.criterion_name,
+                "category": item.category,
+                "weight": item.weight,
+                "linked_requirements": item.requirement_ids,
                 "status": item.status.value,
                 "match_fraction": item.match_fraction,
                 "weighted_score": item.weighted_score,
@@ -666,6 +670,7 @@ def _build_summary(
                 "candidate_requirement": item.candidate_requirement,
                 "missing_information": item.missing_information,
                 "ambiguity": item.ambiguity,
+                "component_assessment": item.model_assessment or {},
             }
             for item in report.criterion_evaluations
         ],
@@ -673,6 +678,7 @@ def _build_summary(
         "final_score": report.final_score,
         "maximum_score": report.maximum_score,
         "evidence_completeness": report.evidence_completeness,
+        "evidence_completeness_diagnostics": report.evidence_completeness_diagnostics,
         "eligibility": report.eligibility.status.value,
         "recommendation_label": report.recommendation_label,
         "human_review_required": report.human_review_required,
@@ -698,12 +704,14 @@ def _summary_markdown(summary: dict) -> str:
     mandatory_rows = "\n".join(
         f"| {item.get('description', item.get('requirement_id', ''))} | {item.get('status', 'unclear')} | "
         f"{_summary_requirement_evidence(item)} | "
-        f"{'; '.join(item.get('ambiguity', [])) or item.get('missing_evidence', '') or 'None'} |"
+        f"{item.get('explanation') or '; '.join(item.get('ambiguity', [])) or item.get('missing_evidence', '') or 'None'} |"
         for item in summary.get("mandatory_requirement_details", [])
     ) or "| None | not_applicable | No direct evidence recorded. | None |"
     criterion_rows = "\n".join(
-        f"| {item['criterion_id']} | {item['match_fraction']:.3f} | {item['weighted_score']:.3f} | "
-        f"{item['status']} | {'<br>'.join(item.get('evidence_found', [])[:3]) or 'No direct evidence recorded.'} |"
+        f"| {item['criterion_id']} | {item.get('criterion_name', '')} | {item.get('category', '')} | "
+        f"{item.get('linked_requirements', [])} | {item['match_fraction']:.3f} | {item['weighted_score']:.3f} | "
+        f"{item['status']} | {_summary_component_text(item)} | "
+        f"{'<br>'.join(item.get('evidence_found', [])[:3]) or 'No direct evidence recorded.'} |"
         for item in summary["criterion_scores"]
     )
     stages = "\n".join(
@@ -742,8 +750,8 @@ Models: Chandra={summary['chandra_model']}, Gemma={summary['gemma_model']}
 
 ## Criterion scores
 
-| Criterion | Match | Weighted score | Status | Evidence |
-| --- | ---: | ---: | --- | --- |
+| Criterion | Name | Category | Linked requirements | Match | Weighted score | Status | Components | Evidence |
+| --- | --- | --- | --- | ---: | ---: | --- | --- | --- |
 {criterion_rows}
 
 ## Strengths
@@ -770,6 +778,24 @@ Uncertain experience ranges: {len(summary['uncertain_experience_ranges'])}
 
 {summary['human_review_disclaimer']}
 """
+
+
+def _summary_component_text(item: dict) -> str:
+    assessment = item.get("component_assessment") or {}
+    parts: list[str] = []
+    supported_core = assessment.get("supported_core_components") or []
+    supported_adjacent = assessment.get("supported_adjacent_components") or []
+    equivalents = assessment.get("controlled_equivalents_used") or []
+    missing_core = assessment.get("missing_core_components") or item.get("missing_information") or []
+    if supported_core:
+        parts.append("core: " + ", ".join(supported_core[:5]))
+    if equivalents:
+        parts.append("controlled equivalent: " + ", ".join(equivalents[:5]))
+    if supported_adjacent:
+        parts.append("adjacent: " + ", ".join(supported_adjacent[:5]))
+    if missing_core:
+        parts.append("missing core: " + ", ".join(missing_core[:5]))
+    return "<br>".join(parts) or "No in-scope components matched."
 
 
 def _print_terminal_summary(summary: dict, print_func: Callable[[str], None]) -> None:

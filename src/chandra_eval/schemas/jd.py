@@ -79,6 +79,10 @@ class StructuredJD(StrictBaseModel):
     @model_validator(mode="after")
     def validate_rubric_weight(self) -> "StructuredJD":
         if self.scoring_rubric:
+            ids = [criterion.criterion_id for criterion in self.scoring_rubric]
+            duplicate_ids = sorted({criterion_id for criterion_id in ids if ids.count(criterion_id) > 1})
+            if duplicate_ids:
+                raise ValueError(f"scoring_rubric criterion_ids must be unique: {', '.join(duplicate_ids)}")
             total = sum(criterion.weight for criterion in self.scoring_rubric)
             if round(total, 3) != 100:
                 raise ValueError(f"scoring_rubric weights must total 100, got {total}")

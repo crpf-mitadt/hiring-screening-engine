@@ -27,6 +27,10 @@ class EligibilityStatus(str, Enum):
 
 class CriterionEvaluation(StrictBaseModel):
     criterion_id: str
+    criterion_name: str = ""
+    category: str = ""
+    weight: float = Field(default=0, ge=0)
+    requirement_ids: list[str] = Field(default_factory=list)
     match_fraction: float = Field(ge=0, le=1)
     weighted_score: float = Field(ge=0)
     status: CriterionStatus
@@ -52,6 +56,10 @@ class CriterionEvaluation(StrictBaseModel):
     def _positive_score_requires_evidence(self) -> "CriterionEvaluation":
         if self.weighted_score > 0 and not self.evidence:
             raise ValueError("weighted_score > 0 requires at least one valid evidence item")
+        if self.weighted_score > 0 and self.model_assessment:
+            scopes = self.model_assessment.get("evidence_scopes", [])
+            if scopes and not any(scope == "in_scope" for scope in scopes):
+                raise ValueError("weighted_score > 0 requires in-scope criterion evidence")
         return self
 
 
@@ -78,6 +86,7 @@ class CandidateEvaluationReport(StrictBaseModel):
     final_score: float
     maximum_score: float = 100.0
     evidence_completeness: float = Field(ge=0, le=1)
+    evidence_completeness_diagnostics: dict[str, Any] = Field(default_factory=dict)
     experience_summary: dict[str, Any] = Field(default_factory=dict)
     strengths: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)

@@ -131,18 +131,13 @@ def criterion_terms(criterion: ScoringCriterion, jd: StructuredJD) -> list[str]:
         ]
     )
     terms: list[str] = []
-    relevant_required = list(criterion.required_skill_names) or [
-        skill for skill in jd.required_skills if _phrase_relevant(skill, seed_text)
-    ]
-    relevant_preferred = list(criterion.preferred_skill_names) or [
-        skill for skill in jd.preferred_skills if _phrase_relevant(skill, seed_text)
-    ]
+    relevant_required = list(criterion.required_skill_names)
+    relevant_preferred = list(criterion.preferred_skill_names)
     linked_requirement_ids = set(criterion.requirement_ids)
     relevant_requirements = [
         requirement.description
         for requirement in [*jd.mandatory_requirements, *jd.preferred_requirements]
         if requirement.requirement_id in linked_requirement_ids
-        or (not linked_requirement_ids and _phrase_relevant(requirement.description, seed_text))
     ]
     terms.extend(relevant_requirements)
     terms.extend(relevant_required)
@@ -150,9 +145,9 @@ def criterion_terms(criterion: ScoringCriterion, jd: StructuredJD) -> list[str]:
         terms.extend(relevant_preferred)
     else:
         terms.extend(skill for skill in relevant_preferred if _phrase_relevant(seed_text, skill))
-    if criterion.category == RequirementCategory.SKILL and criterion.mandatory and not relevant_required:
+    if criterion.category == RequirementCategory.SKILL and criterion.mandatory and not relevant_required and _is_default_required_skill_criterion(seed_text):
         terms.extend(jd.required_skills)
-    if criterion.category == RequirementCategory.SKILL and not criterion.mandatory and "preferred" in normalize_token(seed_text):
+    if criterion.category == RequirementCategory.SKILL and not criterion.mandatory and _is_default_preferred_skill_criterion(seed_text):
         terms.extend(jd.preferred_skills)
     if not terms:
         terms.extend(_important_phrases(seed_text))
@@ -369,6 +364,16 @@ def _phrase_relevant(phrase: str, seed_text: str) -> bool:
     return any(_contains_phrase(seed_norm, option) for option in _term_options(phrase_norm))
 
 
+def _is_default_required_skill_criterion(seed_text: str) -> bool:
+    normalized = normalize_token(seed_text)
+    return "required skill" in normalized or "mandatory skill" in normalized
+
+
+def _is_default_preferred_skill_criterion(seed_text: str) -> bool:
+    normalized = normalize_token(seed_text)
+    return "preferred skill" in normalized or "additional technical" in normalized
+
+
 def _important_phrases(text: str) -> list[str]:
     chunks = [chunk.strip() for chunk in re.split(r"[,;]|\band\b|\bor\b", text, flags=re.IGNORECASE)]
     return [chunk for chunk in chunks if len(_meaningful_tokens(chunk)) >= 1][:8]
@@ -424,20 +429,36 @@ def _dedupe_terms(terms: list[str] | tuple[str, ...]) -> list[str]:
 
 def _dedupe_evidence(items: list[EvidenceRef]) -> list[EvidenceRef]:
     output: list[EvidenceRef] = []
-    seen: set[tuple] = set()
+    positions: dict[tuple, int] = {}
     for item in items:
         key = (
+            item.source_type,
             item.source_document_id,
             item.page_number,
             item.block_index,
-            item.exact_text,
-            item.notes,
+            item.normalized_text or item.exact_text,
         )
-        if key in seen:
+        if key in positions:
+            existing = output[positions[key]]
+            notes = _merge_notes(existing.notes, item.notes)
+            if notes != existing.notes:
+                output[positions[key]] = existing.model_copy(update={"notes": notes})
             continue
-        seen.add(key)
+        positions[key] = len(output)
         output.append(item)
     return output
+
+
+def _merge_notes(left: str | None, right: str | None) -> str | None:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for value in (left, right):
+        for part in str(value or "").split(";"):
+            cleaned = part.strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                parts.append(cleaned)
+    return "; ".join(parts) or None
 
 
 def _mark_evidence(items: list[EvidenceRef], reason: str) -> list[EvidenceRef]:

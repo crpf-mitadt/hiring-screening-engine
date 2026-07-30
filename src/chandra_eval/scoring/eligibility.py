@@ -31,6 +31,7 @@ def evaluate_eligibility(
             "evidence": [],
             "missing_evidence": "",
             "ambiguity": [],
+            "explanation": "",
         }
         if requirement.category == RequirementCategory.SKILL:
             match = match_requirement(requirement.description, index, requirement.accepted_equivalents)
@@ -69,7 +70,7 @@ def evaluate_eligibility(
                     requirement_statuses[requirement.requirement_id] = "met"
                     detail["status"] = "met"
                     detail["evidence"] = [item.model_dump(mode="json") for item in qualification.evidence]
-                    detail["ambiguity"].append(qualification.explanation)
+                    detail["explanation"] = qualification.explanation
                 else:
                     requirement_statuses[requirement.requirement_id] = "unclear"
                     detail["status"] = "unclear"

@@ -51,6 +51,28 @@ data, storage, backend, or database without a named controlled technology are co
 Multi-component technical criteria are scored by independently matching each component, then mapping
 the supported component fraction to the approved discrete scale. For four required components, one,
 two, three, and four supported components map to `0.25`, `0.50`, `0.75`, and `1.00`.
+Rubric criterion identity is field-owned, not position-owned: each result is built from the
+structured JD criterion's `criterion_id`, `name`, `category`, `weight`, `requirement_ids`,
+`required_skill_names`, `preferred_skill_names`, and `evaluation_dimensions`. A linked requirement's
+validated evidence may flow only to criteria that list that `requirement_id`.
+
+Technical-stack criteria distinguish:
+
+- required/core components, such as PHP, Laravel, WordPress, and SQL/database management;
+- controlled-equivalent evidence, such as PostgreSQL for a requirement that explicitly accepts
+  MySQL-like enterprise databases;
+- adjacent or transferable full-stack components, such as JavaScript, React.js, Node.js, Express.js,
+  Vue.js, REST APIs, frontend development, and backend development.
+
+Adjacent full-stack evidence can add at most one discrete scoring step and cannot replace a missing
+mandatory component. Adjacent-only evidence is capped at `0.25`; direct core evidence plus adjacent
+evidence may increase one step but remains capped at `0.75` while any core component is missing.
+Reports label these classes separately.
+
+Soft-skill criteria use only their own `evaluation_dimensions`. Technical tools such as React.js,
+JavaScript, HTML, CSS, and databases do not directly satisfy communication, ownership, or
+proactivity. Additional technical-skill criteria use their own `preferred_skill_names`; soft-skill
+terms do not migrate into them.
 
 Degree requirements are source-constrained: they may match only structured education entries and
 their evidence. Experience paragraphs, job titles, generic ML/AI mentions, leadership text, company
@@ -77,10 +99,16 @@ Any positive `weighted_score` must carry at least one valid evidence reference.
 Evidence completeness is deterministic:
 
 1. Compute the fraction of evaluated criteria with at least one supported or partially supported,
-   criterion-relevant resume evidence item. Duplicate copies of the same evidence do not increase
-   the numerator.
+   criterion-relevant resume evidence item after criterion identity validation, linked-requirement
+   propagation, required/adjacent classification, and evidence deduplication.
 2. If that fraction is zero, completeness is zero.
 3. Otherwise, compute `criteria_fraction * 0.70 + date_score * 0.15 + ocr_score * 0.15`.
 4. `date_score` is `1.0` when experience dates are complete and `0.5` when date warnings exist.
 5. `ocr_score` is `1.0` only when every requested OCR page completed without truncation or failure;
    it is `0.5` for explicitly allowed partial OCR.
+
+Evidence is deduplicated by stable source identity: source type, source document ID, page number,
+block index, and normalized or exact text. If one source block supports multiple facts, the evidence
+object appears once and its notes retain the matched facts. The report also includes completeness
+diagnostics for required/core component counts, adjacent component counts, deduplicated source count,
+and penalties.

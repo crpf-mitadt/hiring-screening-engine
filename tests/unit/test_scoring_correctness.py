@@ -604,6 +604,205 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertIn("WordPress", " ".join(criterion.missing_information))
         self.assertIn("PostgreSQL/MySQL database operations", " ".join(criterion.evidence_found))
 
+    def test_technical_stack_classifies_core_adjacent_and_linked_database_evidence(self) -> None:
+        db_text = "Optimized PostgreSQL/MySQL database operations for reliability and performance."
+        js_text = "Built full-stack JavaScript and React.js REST API features."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["JavaScript", "React.js", "MySQL", "PostgreSQL"],
+                "experience": [
+                    {
+                        "responsibilities": [db_text, js_text],
+                        "evidence": [
+                            _evidence(db_text).model_dump(mode="json"),
+                            _evidence(js_text).model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+        jd = self._full_stack_jd()
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        by_id = {item.criterion_id: item for item in report.criterion_evaluations}
+        technical = by_id["crit_01"]
+        db_requirement = next(
+            item for item in report.eligibility.requirement_details if item["requirement_id"] == "req_tech_02"
+        )
+
+        self.assertEqual(db_requirement["status"], "met")
+        self.assertEqual(technical.match_fraction, 0.5)
+        self.assertIn("SQL/database management", technical.model_assessment["supported_core_components"])
+        self.assertIn("JavaScript", technical.model_assessment["supported_adjacent_components"])
+        self.assertIn("PHP", technical.model_assessment["missing_core_components"])
+        self.assertIn("Laravel", technical.model_assessment["missing_core_components"])
+        self.assertIn("WordPress", technical.model_assessment["missing_core_components"])
+        self.assertIn("PostgreSQL/MySQL database operations", " ".join(technical.evidence_found))
+        self.assertNotIn("JavaScript", " ".join(technical.model_assessment["controlled_equivalents_used"]))
+        self.assertEqual(
+            len([item for item in technical.evidence if item.exact_text == db_text]),
+            1,
+        )
+
+    def test_adjacent_javascript_does_not_satisfy_mandatory_core_terms(self) -> None:
+        js_text = "Built full-stack JavaScript and React.js REST API features."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["JavaScript", "React.js"],
+                "experience": [{"responsibilities": [js_text], "evidence": [_evidence(js_text).model_dump(mode="json")]}],
+            }
+        )
+        report = evaluate_candidate(candidate.scoring_safe_profile, self._full_stack_jd())
+        technical = {item.criterion_id: item for item in report.criterion_evaluations}["crit_01"]
+
+        self.assertEqual(report.eligibility.requirement_statuses["req_tech_02"], "not_found")
+        self.assertEqual(technical.match_fraction, 0.25)
+        self.assertEqual(technical.model_assessment["supported_core_components"], [])
+        self.assertIn("JavaScript", technical.model_assessment["supported_adjacent_components"])
+        self.assertIn("PHP", technical.missing_information)
+        self.assertIn("Laravel", technical.missing_information)
+        self.assertIn("WordPress", technical.missing_information)
+        self.assertIn("SQL/database management", technical.missing_information)
+
+    def test_soft_and_additional_skill_criteria_are_isolated(self) -> None:
+        react_text = "Built React.js dashboards with JavaScript."
+        initiative_text = "Led an initiative to improve release quality and owned the rollout."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["React.js", "JavaScript"],
+                "experience": [
+                    {
+                        "responsibilities": [react_text, initiative_text],
+                        "evidence": [
+                            _evidence(react_text).model_dump(mode="json"),
+                            _evidence(initiative_text).model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, self._full_stack_jd())
+        by_id = {item.criterion_id: item for item in report.criterion_evaluations}
+
+        self.assertNotIn("React.js", by_id["crit_03"].explanation)
+        self.assertNotIn("JavaScript", by_id["crit_03"].explanation)
+        self.assertIn("Ownership", by_id["crit_03"].model_assessment["supported_core_components"])
+        self.assertIn("Proactivity", by_id["crit_03"].model_assessment["supported_core_components"])
+        self.assertEqual(by_id["crit_04"].match_fraction, 0)
+        self.assertIn("DevOps", by_id["crit_04"].missing_information)
+        self.assertIn("SEO", by_id["crit_04"].missing_information)
+        self.assertIn("UI/UX", by_id["crit_04"].missing_information)
+        self.assertNotIn("Proactive Problem Solving", str(by_id["crit_04"].model_dump()))
+
+    def test_criterion_identity_is_stable_when_rubric_order_is_shuffled(self) -> None:
+        db_text = "Optimized PostgreSQL/MySQL database operations for reliability and performance."
+        js_text = "Built full-stack JavaScript REST API features."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["JavaScript", "MySQL", "PostgreSQL"],
+                "experience": [
+                    {
+                        "title": "Software Developer I",
+                        "organization": "Synthetic Product Company",
+                        "start_date": "2024-01",
+                        "end_date": "Present",
+                        "responsibilities": [
+                            "Full-stack logistics systems with APIs.",
+                            db_text,
+                            js_text,
+                        ],
+                        "evidence": [
+                            _evidence("Software Developer I").model_dump(mode="json"),
+                            _evidence("January 2024 - Present").model_dump(mode="json"),
+                            _evidence("Full-stack logistics systems with APIs.").model_dump(mode="json"),
+                            _evidence(db_text).model_dump(mode="json"),
+                            _evidence(js_text).model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+        normal_jd = self._full_stack_jd()
+        shuffled_jd = normal_jd.model_copy(update={"scoring_rubric": list(reversed(normal_jd.scoring_rubric))})
+
+        normal = evaluate_candidate(candidate.scoring_safe_profile, normal_jd)
+        shuffled = evaluate_candidate(candidate.scoring_safe_profile, shuffled_jd)
+        normal_by_id = {item.criterion_id: item for item in normal.criterion_evaluations}
+        shuffled_by_id = {item.criterion_id: item for item in shuffled.criterion_evaluations}
+
+        self.assertEqual(set(normal_by_id), set(shuffled_by_id))
+        for criterion_id in normal_by_id:
+            with self.subTest(criterion_id=criterion_id):
+                self.assertEqual(normal_by_id[criterion_id].match_fraction, shuffled_by_id[criterion_id].match_fraction)
+                self.assertEqual(normal_by_id[criterion_id].missing_information, shuffled_by_id[criterion_id].missing_information)
+                self.assertEqual(
+                    normal_by_id[criterion_id].model_assessment,
+                    shuffled_by_id[criterion_id].model_assessment,
+                )
+
+    def test_met_experience_requirement_uses_explanation_not_ambiguity(self) -> None:
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "title": "Software Developer I",
+                        "organization": "Synthetic Product Company",
+                        "start_date": "2024-01",
+                        "end_date": "Present",
+                        "responsibilities": ["Full-stack logistics systems with REST APIs."],
+                        "evidence": [
+                            _evidence("Software Developer I").model_dump(mode="json"),
+                            _evidence("Synthetic Product Company").model_dump(mode="json"),
+                            _evidence("January 2024 - Present").model_dump(mode="json"),
+                            _evidence("Full-stack logistics systems with REST APIs.").model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+
+        report = evaluate_candidate(candidate.scoring_safe_profile, self._full_stack_jd())
+        detail = next(item for item in report.eligibility.requirement_details if item["requirement_id"] == "req_exp_01")
+
+        self.assertEqual(detail["status"], "met")
+        self.assertEqual(detail["ambiguity"], [])
+        self.assertIn("confirmed months", detail["explanation"])
+
+    def test_duplicate_criterion_ids_are_invalid(self) -> None:
+        with self.assertRaises(ValidationError):
+            StructuredJD(
+                job_id="job",
+                source_document_id="jd",
+                job_title="Role",
+                scoring_rubric=[
+                    ScoringCriterion(
+                        criterion_id="duplicate",
+                        name="One",
+                        category=RequirementCategory.SKILL,
+                        description="Python",
+                        weight=50,
+                    ),
+                    ScoringCriterion(
+                        criterion_id="duplicate",
+                        name="Two",
+                        category=RequirementCategory.SKILL,
+                        description="JavaScript",
+                        weight=50,
+                    ),
+                ],
+            )
+
     def test_component_to_discrete_mapping_covers_all_valid_fractions(self) -> None:
         components = ["PHP", "Laravel", "WordPress", "SQL/database management"]
         expected_by_count = {0: 0, 1: 0.25, 2: 0.5, 3: 0.75, 4: 1}
@@ -713,6 +912,67 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertEqual(complete, 1)
         self.assertLess(degraded, complete)
         self.assertEqual(none, 0)
+
+    def _full_stack_jd(self) -> StructuredJD:
+        return StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_tech_02",
+                    category=RequirementCategory.SKILL,
+                    description="Experience with MySQL or similar enterprise databases.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                ),
+                JDRequirement(
+                    requirement_id="req_exp_01",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                ),
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="crit_01",
+                    name="Technical Stack Proficiency",
+                    category=RequirementCategory.SKILL,
+                    description="PHP; Laravel; WordPress; SQL/database management",
+                    weight=40,
+                    requirement_ids=["req_tech_02"],
+                    required_skill_names=["PHP", "Laravel", "WordPress", "SQL/database management"],
+                ),
+                ScoringCriterion(
+                    criterion_id="crit_02",
+                    name="Experience & Domain Fit",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    weight=30,
+                    requirement_ids=["req_exp_01"],
+                ),
+                ScoringCriterion(
+                    criterion_id="crit_03",
+                    name="Soft Skills & Proactivity",
+                    category=RequirementCategory.SKILL,
+                    description="Communication, ownership, and proactivity",
+                    weight=20,
+                    evaluation_dimensions=["Communication", "Ownership", "Proactivity"],
+                ),
+                ScoringCriterion(
+                    criterion_id="crit_04",
+                    name="Additional Technical Skills",
+                    category=RequirementCategory.SKILL,
+                    description="DevOps, SEO, UI/UX",
+                    weight=10,
+                    preferred_skill_names=["DevOps", "SEO", "UI/UX"],
+                ),
+            ],
+        )
 
 
 if __name__ == "__main__":
