@@ -1,6 +1,7 @@
 """Deterministic candidate-to-JD scoring engine."""
 
 from dataclasses import dataclass, field
+from datetime import date
 import hashlib
 import json
 from uuid import uuid4
@@ -9,7 +10,7 @@ from chandra_eval.scoring.eligibility import evaluate_eligibility
 from chandra_eval.scoring.education import evaluate_education_requirement
 from chandra_eval.scoring.evidence_completeness import evidence_completeness, evidence_completeness_diagnostics
 from chandra_eval.scoring.experience import calculate_experience_duration
-from chandra_eval.scoring.experience_basis import qualify_quantitative_experience
+from chandra_eval.scoring.experience_basis import ExperienceQualification, qualify_quantitative_experience
 from chandra_eval.scoring.matching import (
     EvidenceText,
     build_candidate_evidence_index,
@@ -34,6 +35,11 @@ from chandra_eval.schemas.resume import ScoringSafeProfile
 
 
 APPROVED_FRACTIONS = (0.0, 0.25, 0.5, 0.75, 1.0)
+CLASS_REQUIRED = "required/core"
+CLASS_PREFERRED = "preferred"
+CLASS_ADJACENT = "adjacent/transferable"
+CLASS_CONTROLLED = "controlled equivalent"
+CLASS_EVALUATION_DIMENSION = "evaluation_dimension"
 
 _ADJACENT_FULL_STACK_TERMS = (
     "JavaScript",
@@ -49,32 +55,50 @@ _ADJACENT_FULL_STACK_TERMS = (
 
 _SOFT_SKILL_PATTERNS: dict[str, tuple[str, ...]] = {
     "communication": (
-        "communicated",
-        "communication",
         "presented",
-        "stakeholder",
+        "presented findings",
+        "communicated with clients",
+        "communicated with stakeholders",
         "client communication",
-        "cross functional",
-        "documentation",
+        "stakeholder communication",
+        "authored documentation",
+        "facilitated meetings",
+        "trained",
+        "mentored",
+        "coordinated across",
+        "coordinated with stakeholders",
     ),
     "ownership": (
         "owned",
         "ownership",
-        "led",
-        "lead",
+        "led delivery",
         "accountable",
         "end to end",
-        "independently delivered",
+        "independently managed",
+        "drove",
+        "took responsibility",
+        "production support",
     ),
     "proactivity": (
         "proactively",
+        "proactive",
         "initiative",
         "initiated",
-        "improved",
-        "optimized",
+        "introduced",
         "automated",
         "identified",
         "anticipated",
+        "proposed and implemented",
+        "prevented",
+    ),
+    "problem-solving": (
+        "resolved",
+        "root cause",
+        "debugged",
+        "diagnosed",
+        "reduced",
+        "improved by",
+        "fixed",
     ),
 }
 
@@ -104,7 +128,7 @@ def discrete_match_fraction(value: float) -> float:
 def _status(fraction: float, *, has_terms: bool, ambiguous: bool = False) -> CriterionStatus:
     if not has_terms:
         return CriterionStatus.NOT_APPLICABLE
-    if ambiguous and fraction > 0:
+    if ambiguous:
         return CriterionStatus.UNCLEAR
     if fraction >= 0.999:
         return CriterionStatus.MET
@@ -120,6 +144,8 @@ def _score_criterion(
     *,
     experience_summary: dict,
     eligibility: "EligibilityResult",
+    experience_qualifications: dict[str, ExperienceQualification],
+    evaluation_date: date,
 ) -> CriterionEvaluation:
     missing: list[str] = []
     ambiguity: list[str] = []
@@ -147,15 +173,21 @@ def _score_criterion(
             index=index,
             experience_summary=experience_summary,
             verification_needed=verification_needed,
+            experience_qualifications=experience_qualifications,
+            evaluation_date=evaluation_date,
         )
 
     if criterion.category == RequirementCategory.EXPERIENCE:
         required_months = jd.minimum_experience_months or _minimum_from_requirements(jd)
         if required_months:
-            qualification = qualify_quantitative_experience(
+            qualification = _qualification_for_criterion(
+                criterion,
+                jd,
                 candidate,
+                experience_qualifications,
                 required_months=required_months,
                 requirement_text=criterion.description,
+                evaluation_date=evaluation_date,
             )
             fraction = qualification.fraction
             evidence = qualification.evidence
@@ -307,6 +339,7 @@ def evaluate_candidate(
     jd: StructuredJD,
     evaluation_id: str | None = None,
 ) -> CandidateEvaluationReport:
+    evaluation_date = date.today()
     criteria = jd.scoring_rubric or [
         ScoringCriterion(
             criterion_id="skills",
@@ -334,24 +367,35 @@ def evaluate_candidate(
         ),
     ]
     total_weight = sum(criterion.weight for criterion in criteria) or 1.0
-    duration = calculate_experience_duration(candidate.experience)
+    duration = calculate_experience_duration(candidate.experience, evaluation_date=evaluation_date)
     experience_summary = duration.as_dict()
-    eligibility = evaluate_eligibility(candidate, jd)
+    experience_summary["evaluation_date"] = evaluation_date.isoformat()
+    experience_qualifications = _experience_qualifications(candidate, jd, evaluation_date)
+    eligibility = evaluate_eligibility(
+        candidate,
+        jd,
+        experience_qualifications=experience_qualifications,
+        evaluation_date=evaluation_date,
+    )
     evaluations = [
-        _score_criterion(criterion, candidate, jd, experience_summary=experience_summary, eligibility=eligibility)
+        _score_criterion(
+            criterion,
+            candidate,
+            jd,
+            experience_summary=experience_summary,
+            eligibility=eligibility,
+            experience_qualifications=experience_qualifications,
+            evaluation_date=evaluation_date,
+        )
         for criterion in criteria
     ]
-    _validate_criterion_results(criteria, evaluations)
+    _validate_criterion_results(criteria, evaluations, eligibility=eligibility)
     raw_score = sum(item.weighted_score for item in evaluations) * (100 / total_weight)
     final_score = min(100.0, round(raw_score, 3))
 
-    gaps = sorted({gap for item in evaluations for gap in item.missing_information})
+    gaps = _report_gaps(evaluations)
     criteria_by_id = {criterion.criterion_id: criterion for criterion in criteria}
-    strengths = [
-        criteria_by_id[item.criterion_id].name or criteria_by_id[item.criterion_id].description or item.criterion_id
-        for item in evaluations
-        if item.status == CriterionStatus.MET
-    ]
+    strengths = _report_strengths(evaluations, criteria_by_id)
     if eligibility.status == EligibilityStatus.FAIL:
         recommendation = "mandatory_requirement_failed_human_review_required"
     elif final_score >= 75 and eligibility.status == EligibilityStatus.PASS:
@@ -416,28 +460,18 @@ def _criterion_from_components(
     *,
     verification_needed: list[str],
     candidate_requirement: str,
+    ambiguity: list[str] | None = None,
 ) -> CriterionEvaluation:
-    core_components = [item for item in components if item.component_class in {"required/core", "preferred/core"}]
-    adjacent_components = [item for item in components if item.component_class == "adjacent/transferable"]
-    supported_core = [item for item in core_components if item.matched]
-    supported_adjacent = [item for item in adjacent_components if item.matched]
-    missing_core = [item.term for item in core_components if not item.matched]
-    evidence = _dedupe_evidence([evidence for item in [*supported_core, *supported_adjacent] for evidence in item.evidence])
-    if core_components:
-        core_fraction = len(supported_core) / len(core_components)
-    else:
-        core_fraction = 0.0
-    adjacent_bonus = 0.25 if supported_adjacent else 0.0
-    if core_fraction >= 1:
-        raw_fraction = 1.0
-    elif supported_core:
-        raw_fraction = min(0.75, core_fraction + adjacent_bonus)
-    elif supported_adjacent:
-        raw_fraction = 0.25
-    else:
-        raw_fraction = 0.0
+    required_components = [item for item in components if item.component_class == CLASS_REQUIRED]
+    preferred_components = [item for item in components if item.component_class == CLASS_PREFERRED]
+    dimension_components = [item for item in components if item.component_class == CLASS_EVALUATION_DIMENSION]
+    adjacent_components = [item for item in components if item.component_class == CLASS_ADJACENT]
+    matched_components = [item for item in components if item.matched]
+    missing_required = [item.term for item in [*required_components, *dimension_components] if not item.matched]
+    evidence = _dedupe_evidence([evidence for item in matched_components for evidence in item.evidence])
+    raw_fraction = _weighted_component_fraction(components)
     fraction = discrete_match_fraction(raw_fraction)
-    explanation = _component_explanation(supported_core, supported_adjacent, missing_core)
+    explanation = _component_explanation(components)
     return CriterionEvaluation(
         criterion_id=criterion.criterion_id,
         criterion_name=criterion.name,
@@ -446,18 +480,17 @@ def _criterion_from_components(
         requirement_ids=criterion.requirement_ids,
         match_fraction=fraction,
         weighted_score=round(criterion.weight * fraction, 6),
-        status=_status(fraction, has_terms=bool(core_components or adjacent_components)),
+        status=_status(fraction, has_terms=bool(components), ambiguous=bool(ambiguity)),
         explanation=explanation,
         evidence=evidence,
-        missing_information=missing_core,
-        ambiguity=[],
+        missing_information=missing_required,
+        ambiguity=ambiguity or [],
         verification_needed=verification_needed,
         candidate_requirement=candidate_requirement,
         evidence_found=_evidence_found(evidence),
         component_assessment=_component_assessment(
             criterion,
-            core_components=core_components,
-            adjacent_components=adjacent_components,
+            components=components,
             evidence=evidence,
         ),
     )
@@ -472,14 +505,21 @@ def _score_mixed_experience_skill_criterion(
     index: list[EvidenceText],
     experience_summary: dict,
     verification_needed: list[str],
+    experience_qualifications: dict[str, ExperienceQualification],
+    evaluation_date: date,
 ) -> CriterionEvaluation:
     components: list[ComponentEvaluation] = []
+    ambiguity: list[str] = []
     required_months = jd.minimum_experience_months or _minimum_from_requirements(jd)
     if required_months:
-        qualification = qualify_quantitative_experience(
+        qualification = _qualification_for_criterion(
+            criterion,
+            jd,
             candidate,
+            experience_qualifications,
             required_months=required_months,
             requirement_text=criterion.description,
+            evaluation_date=evaluation_date,
         )
         ambiguity = list(qualification.ambiguity)
         if qualification.confirmed_months < required_months and experience_summary.get("uncertain_ranges"):
@@ -488,7 +528,7 @@ def _score_mixed_experience_skill_criterion(
             ComponentEvaluation(
                 term="Relevant experience duration/relevance",
                 source=_experience_component_source(criterion),
-                component_class="required/core",
+                component_class=CLASS_REQUIRED,
                 matched=qualification.fraction >= 1 and bool(qualification.evidence),
                 evidence=qualification.evidence if qualification.evidence else [],
                 note=qualification.explanation,
@@ -500,6 +540,7 @@ def _score_mixed_experience_skill_criterion(
         components,
         verification_needed=verification_needed,
         candidate_requirement=criterion.description,
+        ambiguity=ambiguity,
     )
 
 
@@ -520,7 +561,7 @@ def _score_soft_skill_criterion(
     missing = [item.term for item in components if not item.matched]
     evidence = _dedupe_evidence([evidence for item in supported for evidence in item.evidence])
     fraction = discrete_match_fraction(len(supported) / len(components)) if components else 0.0
-    explanation = _component_explanation(supported, [], missing)
+    explanation = _component_explanation(components)
     return CriterionEvaluation(
         criterion_id=criterion.criterion_id,
         criterion_name=criterion.name,
@@ -539,8 +580,7 @@ def _score_soft_skill_criterion(
         evidence_found=_evidence_found(evidence),
         component_assessment=_component_assessment(
             criterion,
-            core_components=components,
-            adjacent_components=[],
+            components=components,
             evidence=evidence,
         ),
     )
@@ -554,8 +594,11 @@ def _criterion_components(
     *,
     include_linked_experience: bool = True,
 ) -> list[ComponentEvaluation]:
-    terms = _owned_core_terms(criterion, jd, include_linked_experience=include_linked_experience)
-    components = [_match_component(term, index, source=_component_source(term, criterion), component_class=_core_class(criterion)) for term in terms]
+    components = _owned_components(criterion, jd, include_linked_experience=include_linked_experience)
+    components = [
+        _match_component(component.term, index, source=component.source, component_class=component.component_class)
+        for component in components
+    ]
     components = _merge_linked_requirement_components(
         components,
         criterion,
@@ -567,28 +610,52 @@ def _criterion_components(
     return components
 
 
-def _owned_core_terms(
+def _owned_components(
     criterion: ScoringCriterion,
     jd: StructuredJD,
     *,
     include_linked_experience: bool = True,
-) -> list[str]:
-    terms: list[str] = []
-    terms.extend(criterion.required_skill_names)
-    terms.extend(criterion.preferred_skill_names)
+) -> list[ComponentEvaluation]:
+    components: list[ComponentEvaluation] = []
+    for term in criterion.required_skill_names:
+        components.append(ComponentEvaluation(term=term, source="required_skill_names", component_class=CLASS_REQUIRED))
+    for term in criterion.preferred_skill_names:
+        components.append(ComponentEvaluation(term=term, source="preferred_skill_names", component_class=CLASS_PREFERRED))
     linked_ids = set(criterion.requirement_ids)
     for requirement in [*jd.mandatory_requirements, *jd.preferred_requirements]:
         if not include_linked_experience and requirement.category == RequirementCategory.EXPERIENCE:
             continue
-        if requirement.requirement_id in linked_ids and not _requirement_represented(requirement.description, terms):
-            terms.extend(_linked_requirement_component_terms(requirement.description))
-    if not terms and criterion.mandatory and _default_required_skill_criterion(criterion):
-        terms.extend(jd.required_skills)
-    if not terms and not criterion.mandatory and _default_preferred_skill_criterion(criterion):
-        terms.extend(jd.preferred_skills)
-    if not terms:
-        terms.append(criterion.description or criterion.name)
-    return _dedupe_terms(terms)
+        if requirement.requirement_id in linked_ids and not _requirement_represented(
+            requirement.description, [item.term for item in components]
+        ):
+            component_class = CLASS_REQUIRED if requirement.mandatory else CLASS_PREFERRED
+            for term in _linked_requirement_component_terms(requirement.description):
+                components.append(
+                    ComponentEvaluation(
+                        term=term,
+                        source=f"linked requirement {requirement.requirement_id}",
+                        component_class=component_class,
+                    )
+                )
+    if not components and criterion.mandatory and _default_required_skill_criterion(criterion):
+        components.extend(
+            ComponentEvaluation(term=term, source="required_skills", component_class=CLASS_REQUIRED)
+            for term in jd.required_skills
+        )
+    if not components and not criterion.mandatory and _default_preferred_skill_criterion(criterion):
+        components.extend(
+            ComponentEvaluation(term=term, source="preferred_skills", component_class=CLASS_PREFERRED)
+            for term in jd.preferred_skills
+        )
+    if not components:
+        components.append(
+            ComponentEvaluation(
+                term=criterion.description or criterion.name,
+                source="criterion description fallback",
+                component_class=CLASS_REQUIRED if criterion.mandatory else CLASS_PREFERRED,
+            )
+        )
+    return _dedupe_components(components)
 
 
 def _linked_requirement_component_terms(description: str) -> list[str]:
@@ -661,7 +728,7 @@ def _merge_linked_requirement_components(
                 ComponentEvaluation(
                     term=requirement.description,
                     source=f"linked requirement {requirement_id}",
-                    component_class=_core_class(criterion),
+                    component_class=CLASS_REQUIRED if requirement.mandatory else CLASS_PREFERRED,
                     matched=True,
                     evidence=evidence,
                     note=f"linked requirement {requirement_id} supplied validated evidence",
@@ -676,38 +743,63 @@ def _adjacent_components(
     index: list[EvidenceText],
 ) -> list[ComponentEvaluation]:
     if not _allows_full_stack_adjacent(criterion):
-        return []
+        return _git_related_adjacent_components(criterion, index)
     core_terms = [component.term for component in core_components]
-    adjacent_terms = _dedupe_terms(
+    output: list[ComponentEvaluation] = []
+    source_declared = _dedupe_terms(criterion.adjacent_skill_names)
+    inferred = _dedupe_terms(
         [
-            *criterion.adjacent_skill_names,
-            *[
-                term
-                for term in _ADJACENT_FULL_STACK_TERMS
-                if not any(_same_or_related_term(term, core_term) for core_term in core_terms)
-            ],
+            term
+            for term in _ADJACENT_FULL_STACK_TERMS
+            if not any(_same_or_related_term(term, core_term) for core_term in core_terms)
+            and not any(_same_or_related_term(term, adjacent_term) for adjacent_term in source_declared)
         ]
     )
-    output: list[ComponentEvaluation] = []
-    for term in adjacent_terms:
+    for term, source in [
+        *[(term, "adjacent_skill_names") for term in source_declared],
+        *[(term, "adjacent-skill rule v1: full-stack-transferable") for term in inferred],
+    ]:
         match = match_terms([term], index)
         if match.evidence:
             output.append(
                 ComponentEvaluation(
                     term=term,
-                    source="adjacent-skill rule",
-                    component_class="adjacent/transferable",
+                    source=source,
+                    component_class=CLASS_ADJACENT,
                     matched=True,
                     evidence=match.evidence,
                     note=f"{term} recognized as adjacent full-stack evidence, not a mandatory substitute",
                 )
             )
-    return output
+    output.extend(_git_related_adjacent_components(criterion, index))
+    return _dedupe_components(output)
+
+
+def _git_related_adjacent_components(criterion: ScoringCriterion, index: list[EvidenceText]) -> list[ComponentEvaluation]:
+    preferred_hosts = {normalize_token(term) for term in criterion.preferred_skill_names if normalize_token(term) in {"github", "gitlab"}}
+    if not preferred_hosts:
+        return []
+    match = match_terms(["Git"], index)
+    if not match.evidence:
+        return []
+    return [
+        ComponentEvaluation(
+            term="Git version control",
+            source="adjacent-skill rule v1: git-hosting-related",
+            component_class=CLASS_ADJACENT,
+            matched=True,
+            evidence=match.evidence,
+            note="Plain Git is related evidence for Git hosting tools, not an exact GitHub or GitLab match.",
+        )
+    ]
 
 
 def _match_soft_skill_dimension(dimension: str, index: list[EvidenceText]) -> ComponentEvaluation:
     normalized = normalize_token(dimension)
-    key = next((name for name in _SOFT_SKILL_PATTERNS if _contains_phrase(normalized, name)), normalized)
+    if "problem" in normalized and "solv" in normalized:
+        key = "problem-solving"
+    else:
+        key = next((name for name in _SOFT_SKILL_PATTERNS if _contains_phrase(normalized, name)), normalized)
     patterns = _SOFT_SKILL_PATTERNS.get(key, ())
     for item in index:
         if item.source not in {"experience", "leadership", "achievement", "project", "summary"}:
@@ -720,12 +812,12 @@ def _match_soft_skill_dimension(dimension: str, index: list[EvidenceText]) -> Co
                 return ComponentEvaluation(
                     term=dimension,
                     source="evaluation_dimensions",
-                    component_class="required/core",
+                    component_class=CLASS_EVALUATION_DIMENSION,
                     matched=True,
                     evidence=evidence,
-                    note=f"matched direct {dimension} evidence",
+                    note=f"matched direct {dimension} evidence via trigger phrase '{pattern}'",
                 )
-    return ComponentEvaluation(term=dimension, source="evaluation_dimensions", component_class="required/core")
+    return ComponentEvaluation(term=dimension, source="evaluation_dimensions", component_class=CLASS_EVALUATION_DIMENSION)
 
 
 def _soft_skill_evidence(item: EvidenceText, pattern: str, dimension: str) -> list[EvidenceRef]:
@@ -748,26 +840,33 @@ def _soft_skill_evidence(item: EvidenceText, pattern: str, dimension: str) -> li
     ]
 
 
-def _component_explanation(
-    supported_core: list[ComponentEvaluation],
-    supported_adjacent: list[ComponentEvaluation],
-    missing_core: list[str],
-) -> str:
+def _component_explanation(components: list[ComponentEvaluation]) -> str:
     parts: list[str] = []
-    direct = [item.term for item in supported_core if "linked requirement" not in item.source]
-    linked = [item.term for item in supported_core if "linked requirement" in item.source]
-    if direct:
-        parts.append(f"Supported required/core components: {', '.join(direct[:6])}.")
-    if linked:
-        parts.append(f"Controlled or linked requirement evidence supported: {', '.join(linked[:6])}.")
+    supported_required = [item.term for item in components if item.component_class == CLASS_REQUIRED and item.matched]
+    supported_preferred = [item.term for item in components if item.component_class == CLASS_PREFERRED and item.matched]
+    supported_dimensions = [item.term for item in components if item.component_class == CLASS_EVALUATION_DIMENSION and item.matched]
+    supported_adjacent = [item for item in components if item.component_class == CLASS_ADJACENT and item.matched]
+    missing_required = [item.term for item in components if item.component_class == CLASS_REQUIRED and not item.matched]
+    missing_preferred = [item.term for item in components if item.component_class == CLASS_PREFERRED and not item.matched]
+    missing_dimensions = [item.term for item in components if item.component_class == CLASS_EVALUATION_DIMENSION and not item.matched]
+    if supported_required:
+        parts.append(f"Supported required/core components: {', '.join(supported_required[:6])}.")
+    if supported_preferred:
+        parts.append(f"Supported preferred components: {', '.join(supported_preferred[:6])}.")
+    if supported_dimensions:
+        parts.append(f"Supported evaluation dimensions: {', '.join(supported_dimensions[:6])}.")
     if supported_adjacent:
         parts.append(
             "Adjacent or transferable components: "
             + ", ".join(item.term for item in supported_adjacent[:6])
             + "."
         )
-    if missing_core:
-        parts.append(f"Missing required/core components: {', '.join(missing_core[:8])}.")
+    if missing_required:
+        parts.append(f"Missing required/core components: {', '.join(missing_required[:8])}.")
+    if missing_preferred:
+        parts.append(f"Missing preferred components: {', '.join(missing_preferred[:8])}.")
+    if missing_dimensions:
+        parts.append(f"Unverified evaluation dimensions: {', '.join(missing_dimensions[:8])}.")
     if not parts:
         parts.append("No in-scope resume evidence was found for the criterion components.")
     return " ".join(parts)
@@ -776,11 +875,14 @@ def _component_explanation(
 def _component_assessment(
     criterion: ScoringCriterion,
     *,
-    core_components: list[ComponentEvaluation],
-    adjacent_components: list[ComponentEvaluation],
+    components: list[ComponentEvaluation],
     evidence: list[EvidenceRef],
 ) -> dict:
-    controlled_components = [item for item in core_components if _is_database_component(item.term)]
+    required_components = [item for item in components if item.component_class == CLASS_REQUIRED]
+    preferred_components = [item for item in components if item.component_class == CLASS_PREFERRED]
+    adjacent_components = [item for item in components if item.component_class == CLASS_ADJACENT]
+    dimension_components = [item for item in components if item.component_class == CLASS_EVALUATION_DIMENSION]
+    controlled_components = [item for item in required_components if _is_database_component(item.term)]
     controlled_evidence = [
         evidence_item
         for component in controlled_components
@@ -798,9 +900,20 @@ def _component_assessment(
         "adjacent_skill_names": list(criterion.adjacent_skill_names),
         "evaluation_dimensions": list(criterion.evaluation_dimensions),
         "source_criterion_hash": _source_criterion_hash(criterion),
-        "required_core_components": [item.term for item in core_components],
+        "required_core_components": [item.term for item in required_components],
+        "preferred_components": [item.term for item in preferred_components],
         "controlled_equivalent_components": [item.term for item in controlled_components],
         "adjacent_components_considered": [item.term for item in adjacent_components],
+        "source_declared_adjacent_components": [
+            item.term for item in adjacent_components if item.source == "adjacent_skill_names"
+        ],
+        "inferred_adjacent_components": [
+            item.term for item in adjacent_components if item.source.startswith("adjacent-skill rule")
+        ],
+        "adjacent_inference_rules": sorted(
+            {item.source for item in adjacent_components if item.source.startswith("adjacent-skill rule")}
+        ),
+        "evaluation_dimension_components": [item.term for item in dimension_components],
         "components": [
             {
                 "term": item.term,
@@ -814,12 +927,16 @@ def _component_assessment(
                 "explanation": item.note,
                 "note": item.note,
             }
-            for item in [*core_components, *adjacent_components]
+            for item in components
         ],
-        "supported_core_components": [item.term for item in core_components if item.matched],
-        "supported_required_components": [item.term for item in core_components if item.matched],
-        "missing_core_components": [item.term for item in core_components if not item.matched],
+        "supported_core_components": [item.term for item in required_components if item.matched],
+        "supported_required_components": [item.term for item in required_components if item.matched],
+        "missing_core_components": [item.term for item in required_components if not item.matched],
+        "supported_preferred_components": [item.term for item in preferred_components if item.matched],
+        "missing_preferred_components": [item.term for item in preferred_components if not item.matched],
         "supported_adjacent_components": [item.term for item in adjacent_components if item.matched],
+        "supported_evaluation_dimensions": [item.term for item in dimension_components if item.matched],
+        "missing_evaluation_dimensions": [item.term for item in dimension_components if not item.matched],
         "supported_controlled_equivalents": sorted(_controlled_equivalent_notes(controlled_evidence)),
         "controlled_equivalents_used": sorted(_controlled_equivalent_notes(controlled_evidence)),
         "evidence_scopes": ["in_scope" for _ in evidence],
@@ -836,19 +953,156 @@ def _single_component_assessment(
 ) -> dict:
     return _component_assessment(
         criterion,
-        core_components=[
+        components=[
             ComponentEvaluation(
                 term=term,
                 source=source,
-                component_class=_core_class(criterion),
+                component_class=CLASS_REQUIRED if criterion.mandatory or source != "preferred_skill_names" else CLASS_PREFERRED,
                 matched=matched,
                 evidence=evidence if matched else [],
                 note="criterion evaluated from source rubric definition",
             )
         ],
-        adjacent_components=[],
         evidence=evidence if matched else [],
     )
+
+
+def _weighted_component_fraction(components: list[ComponentEvaluation]) -> float:
+    required_like = [item for item in components if item.component_class in {CLASS_REQUIRED, CLASS_EVALUATION_DIMENSION}]
+    preferred = [item for item in components if item.component_class == CLASS_PREFERRED]
+    adjacent = [item for item in components if item.component_class == CLASS_ADJACENT]
+    if required_like:
+        required_fraction = len([item for item in required_like if item.matched]) / len(required_like)
+        preferred_fraction = len([item for item in preferred if item.matched]) / len(preferred) if preferred else 0.0
+        adjacent_bonus = 0.25 if any(item.matched for item in adjacent) else 0.0
+        if preferred:
+            return min(1.0, (required_fraction * 0.75) + (preferred_fraction * 0.25) + adjacent_bonus)
+        return min(1.0, required_fraction + adjacent_bonus)
+    denominator = sum(_component_weight(item) for item in components)
+    if denominator <= 0:
+        return 0.0
+    numerator = sum(_component_weight(item) for item in components if item.matched)
+    return numerator / denominator
+
+
+def _component_weight(component: ComponentEvaluation) -> float:
+    if component.component_class in {CLASS_REQUIRED, CLASS_EVALUATION_DIMENSION}:
+        return 1.0
+    if component.component_class == CLASS_PREFERRED:
+        return 0.5
+    if component.component_class == CLASS_ADJACENT:
+        return 0.25
+    return 0.0
+
+
+def _dedupe_components(components: list[ComponentEvaluation]) -> list[ComponentEvaluation]:
+    output: list[ComponentEvaluation] = []
+    seen: set[tuple[str, str]] = set()
+    for component in components:
+        key = (normalize_token(component.term), component.component_class)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(component)
+    return output
+
+
+def _experience_qualifications(
+    candidate: ScoringSafeProfile,
+    jd: StructuredJD,
+    evaluation_date: date,
+) -> dict[str, ExperienceQualification]:
+    qualifications: dict[str, ExperienceQualification] = {}
+    for requirement in jd.mandatory_requirements:
+        if requirement.category != RequirementCategory.EXPERIENCE or requirement.minimum_value is None:
+            continue
+        qualifications[requirement.requirement_id] = qualify_quantitative_experience(
+            candidate,
+            required_months=int(requirement.minimum_value),
+            requirement_text=requirement.description,
+            evaluation_date=evaluation_date,
+        )
+    return qualifications
+
+
+def _qualification_for_criterion(
+    criterion: ScoringCriterion,
+    jd: StructuredJD,
+    candidate: ScoringSafeProfile,
+    experience_qualifications: dict[str, ExperienceQualification],
+    *,
+    required_months: int,
+    requirement_text: str,
+    evaluation_date: date,
+) -> ExperienceQualification:
+    requirements = {item.requirement_id: item for item in jd.mandatory_requirements}
+    for requirement_id in criterion.requirement_ids:
+        requirement = requirements.get(requirement_id)
+        if (
+            requirement
+            and requirement.category == RequirementCategory.EXPERIENCE
+            and int(requirement.minimum_value or 0) == int(required_months)
+        ):
+            qualification = experience_qualifications.get(requirement_id)
+            if qualification is not None:
+                return qualification
+    return qualify_quantitative_experience(
+        candidate,
+        required_months=required_months,
+        requirement_text=requirement_text,
+        evaluation_date=evaluation_date,
+    )
+
+
+def _report_strengths(
+    evaluations: list[CriterionEvaluation],
+    criteria_by_id: dict[str, ScoringCriterion],
+) -> list[str]:
+    strengths: list[str] = []
+    seen: set[str] = set()
+    for evaluation in evaluations:
+        criterion = criteria_by_id[evaluation.criterion_id]
+        if evaluation.status == CriterionStatus.MET:
+            _append_unique(strengths, seen, criterion.name or criterion.description or evaluation.criterion_id)
+        for component in evaluation.component_assessment.get("components", []):
+            if not component.get("matched") or not component.get("evidence"):
+                continue
+            classification = component.get("classification") or component.get("class")
+            if classification == CLASS_EVALUATION_DIMENSION:
+                continue
+            if classification == CLASS_REQUIRED:
+                prefix = "required/core"
+            elif classification == CLASS_PREFERRED:
+                prefix = "preferred"
+            elif classification == CLASS_ADJACENT:
+                prefix = "adjacent"
+            else:
+                continue
+            _append_unique(strengths, seen, f"{prefix}: {criterion.name}: {component.get('term')}")
+    return strengths
+
+
+def _report_gaps(evaluations: list[CriterionEvaluation]) -> list[str]:
+    gaps: list[str] = []
+    seen: set[str] = set()
+    for evaluation in evaluations:
+        assessment = evaluation.component_assessment
+        for term in evaluation.missing_information:
+            _append_unique(gaps, seen, term)
+        for term in assessment.get("missing_core_components", []) or []:
+            _append_unique(gaps, seen, f"mandatory/core gap: {evaluation.criterion_name}: {term}")
+        for term in assessment.get("missing_preferred_components", []) or []:
+            _append_unique(gaps, seen, f"preferred gap: {evaluation.criterion_name}: {term}")
+        for term in assessment.get("missing_evaluation_dimensions", []) or []:
+            _append_unique(gaps, seen, f"unverified soft-skill dimension: {evaluation.criterion_name}: {term}")
+    return gaps
+
+
+def _append_unique(output: list[str], seen: set[str], value: str) -> None:
+    cleaned = value.strip()
+    if cleaned and cleaned not in seen:
+        seen.add(cleaned)
+        output.append(cleaned)
 
 
 def _source_criterion_hash(criterion: ScoringCriterion) -> str:
@@ -868,18 +1122,6 @@ def _source_criterion_hash(criterion: ScoringCriterion) -> str:
         "evaluation_dimensions": criterion.evaluation_dimensions,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-
-
-def _core_class(criterion: ScoringCriterion) -> str:
-    return "preferred/core" if criterion.preferred_skill_names and not criterion.required_skill_names else "required/core"
-
-
-def _component_source(term: str, criterion: ScoringCriterion) -> str:
-    if term in criterion.required_skill_names:
-        return "required_skill_names"
-    if term in criterion.preferred_skill_names:
-        return "preferred_skill_names"
-    return "linked requirement"
 
 
 def _default_required_skill_criterion(criterion: ScoringCriterion) -> bool:
@@ -970,7 +1212,12 @@ def _controlled_equivalent_notes(evidence: list[EvidenceRef]) -> set[str]:
     return used
 
 
-def _validate_criterion_results(criteria: list[ScoringCriterion], evaluations: list[CriterionEvaluation]) -> None:
+def _validate_criterion_results(
+    criteria: list[ScoringCriterion],
+    evaluations: list[CriterionEvaluation],
+    *,
+    eligibility: "EligibilityResult",
+) -> None:
     criteria_by_id = {criterion.criterion_id: criterion for criterion in criteria}
     result_ids = [item.criterion_id for item in evaluations]
     if len(result_ids) != len(set(result_ids)):
@@ -987,6 +1234,53 @@ def _validate_criterion_results(criteria: list[ScoringCriterion], evaluations: l
             raise ValueError(f"Criterion weight mismatch for {item.criterion_id}.")
         if item.requirement_ids != criterion.requirement_ids:
             raise ValueError(f"Criterion linked requirement mismatch for {item.criterion_id}.")
+        _validate_component_runtime_invariants(item)
+        _validate_linked_experience_consistency(criterion, item, eligibility)
+
+
+def _validate_component_runtime_invariants(evaluation: CriterionEvaluation) -> None:
+    for component in evaluation.component_assessment.get("components", []):
+        source = str(component.get("source", ""))
+        classification = component.get("classification") or component.get("class")
+        if source == "preferred_skill_names" and classification != CLASS_PREFERRED:
+            raise ValueError("source=preferred_skill_names implies class=preferred")
+        if source == "evaluation_dimensions" and classification != CLASS_EVALUATION_DIMENSION:
+            raise ValueError("source=evaluation_dimensions implies class=evaluation_dimension")
+        if source.startswith("adjacent-skill rule") and classification != CLASS_ADJACENT:
+            raise ValueError("source=adjacent-skill rule implies class=adjacent/transferable")
+        if component.get("matched") and not component.get("evidence"):
+            raise ValueError("supported components require evidence")
+        if normalize_token(str(component.get("term", ""))) == "github":
+            for evidence in component.get("evidence", []) or []:
+                notes = normalize_token(str(evidence.get("notes", "")))
+                if _contains_phrase(notes, "exact token phrase git"):
+                    raise ValueError("Git evidence cannot be labelled an exact GitHub match")
+
+
+def _validate_linked_experience_consistency(
+    criterion: ScoringCriterion,
+    evaluation: CriterionEvaluation,
+    eligibility: "EligibilityResult",
+) -> None:
+    details = {detail.get("requirement_id"): detail for detail in eligibility.requirement_details}
+    for requirement_id in criterion.requirement_ids:
+        detail = details.get(requirement_id)
+        if not detail or "exp" not in requirement_id.lower():
+            continue
+        required_months = detail.get("required_months")
+        if required_months is None:
+            continue
+        linked_components = [
+            component
+            for component in evaluation.component_assessment.get("components", [])
+            if requirement_id in str(component.get("source", ""))
+        ]
+        if not linked_components:
+            continue
+        if detail.get("status") == "met" and any(not component.get("matched") for component in linked_components):
+            raise ValueError(
+                f"Linked experience criterion {evaluation.criterion_id} contradicts met requirement {requirement_id}."
+            )
 
 
 def _minimum_from_requirements(jd: StructuredJD) -> int:

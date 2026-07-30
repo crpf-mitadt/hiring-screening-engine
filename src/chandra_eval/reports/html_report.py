@@ -95,9 +95,13 @@ def _component_summary(assessment: dict) -> str:
     parts: list[str] = []
     for label, key in (
         ("core", "supported_core_components"),
+        ("preferred", "supported_preferred_components"),
         ("adjacent", "supported_adjacent_components"),
         ("controlled", "controlled_equivalents_used"),
+        ("evaluation dimensions", "supported_evaluation_dimensions"),
         ("missing core", "missing_core_components"),
+        ("missing preferred", "missing_preferred_components"),
+        ("unverified dimensions", "missing_evaluation_dimensions"),
     ):
         values = assessment.get(key) or []
         if values:

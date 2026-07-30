@@ -74,40 +74,70 @@ class CriterionEvaluation(StrictBaseModel):
     def _validate_component_assessment(self) -> None:
         assessment = self.component_assessment
         required_core = set(assessment.get("required_core_components", []))
+        preferred = set(assessment.get("preferred_components", []))
+        dimensions = set(assessment.get("evaluation_dimension_components", []))
         controlled_scope = set(assessment.get("controlled_equivalent_components", []))
         adjacent_scope = set(assessment.get("adjacent_components_considered", []))
         supported_core = set(assessment.get("supported_core_components", []))
+        supported_preferred = set(assessment.get("supported_preferred_components", []))
+        supported_dimensions = set(assessment.get("supported_evaluation_dimensions", []))
         supported_controlled = set(assessment.get("supported_controlled_equivalents", []))
         supported_adjacent = set(assessment.get("supported_adjacent_components", []))
         missing_core = set(assessment.get("missing_core_components", []))
+        missing_preferred = set(assessment.get("missing_preferred_components", []))
+        missing_dimensions = set(assessment.get("missing_evaluation_dimensions", []))
+        if required_core & preferred:
+            raise ValueError("preferred components cannot appear in required/core arrays")
+        if required_core & dimensions or preferred & dimensions:
+            raise ValueError("evaluation dimensions cannot appear in required/preferred component arrays")
         if not supported_core.issubset(required_core):
             raise ValueError("supported_core_components must be a subset of required_core_components")
+        if not supported_preferred.issubset(preferred):
+            raise ValueError("supported_preferred_components must be a subset of preferred_components")
+        if not supported_dimensions.issubset(dimensions):
+            raise ValueError("supported_evaluation_dimensions must be a subset of evaluation_dimension_components")
         if supported_controlled and not controlled_scope:
             raise ValueError("supported_controlled_equivalents require controlled_equivalent_components")
         if not supported_adjacent.issubset(adjacent_scope):
             raise ValueError("supported_adjacent_components must be a subset of adjacent_components_considered")
         if missing_core != required_core - supported_core:
             raise ValueError("missing_core_components must equal unmatched required_core_components")
+        if missing_preferred != preferred - supported_preferred:
+            raise ValueError("missing_preferred_components must equal unmatched preferred_components")
+        if missing_dimensions != dimensions - supported_dimensions:
+            raise ValueError("missing_evaluation_dimensions must equal unmatched evaluation_dimension_components")
         matched_evidence_keys: set[tuple] = set()
         for component in assessment.get("components", []):
             evidence_items = component.get("evidence", []) or []
+            component_class = component.get("classification") or component.get("class")
+            source = component.get("source")
             if component.get("matched") and not evidence_items:
                 raise ValueError("every matched component must have evidence")
-            if component.get("source") not in {
+            if source == "preferred_skill_names" and component_class != "preferred":
+                raise ValueError("source=preferred_skill_names implies class=preferred")
+            if source == "evaluation_dimensions" and component_class != "evaluation_dimension":
+                raise ValueError("source=evaluation_dimensions implies class=evaluation_dimension")
+            if str(source or "").startswith("adjacent-skill rule") and component_class != "adjacent/transferable":
+                raise ValueError("source=adjacent-skill rule implies class=adjacent/transferable")
+            if source not in {
                 "required_skill_names",
                 "preferred_skill_names",
                 "evaluation_dimensions",
                 "adjacent-skill rule",
+                "adjacent_skill_names",
                 "criterion description",
                 "criterion description fallback",
+                "required_skills",
+                "preferred_skills",
             } and "linked requirement" not in str(component.get("source", "")):
-                raise ValueError("component source must identify a structured field or linked requirement")
+                if not str(source or "").startswith("adjacent-skill rule"):
+                    raise ValueError("component source must identify a structured field or linked requirement")
             if component.get("matched"):
                 for evidence in evidence_items:
                     matched_evidence_keys.add(_evidence_key(evidence))
         criterion_keys = {_evidence_key(item.model_dump(mode="json")) for item in self.evidence}
-        if criterion_keys and matched_evidence_keys and not criterion_keys.issubset(matched_evidence_keys):
-            raise ValueError("criterion evidence must belong to matched component evidence")
+        if criterion_keys and matched_evidence_keys and criterion_keys != matched_evidence_keys:
+            raise ValueError("criterion evidence must be the deduplicated union of matched component evidence")
 
 
 def _evidence_key(item: dict[str, Any]) -> tuple:

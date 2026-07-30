@@ -41,8 +41,10 @@ titles and responsibilities, skills used, top-level skills, projects, publicatio
 research, leadership, and achievements. Exact/normalized matches are combined with a narrow alias
 map for auditable business terms such as MS Office, CRM, lead generation, and campaign management.
 Term matching uses token or phrase boundaries. Short technical terms such as Git, R, C, Go, ML, AI,
-AWS, GCP, and SQL do not match inside unrelated words. `Git` may match `GitHub` only through the
-explicit alias map.
+AWS, GCP, and SQL do not match inside unrelated words. `GitHub` requires `GitHub`, `github.com`, or
+explicit GitHub repository/profile/workflow evidence. Plain `Git` is not an exact GitHub or GitLab
+match. Broad `Git` requirements may be supported by GitHub/GitLab evidence, but hosting-platform
+requirements are not satisfied by plain Git.
 
 Database requirements use controlled alternatives. `MySQL or similar enterprise databases` can match
 direct MySQL evidence or PostgreSQL evidence, but `MySQL only` remains strict. Generic terms such as
@@ -61,41 +63,56 @@ templates. Runtime validation compares each result with the source criterion, an
 assessment metadata includes a stable hash of the source criterion definition.
 JD structuring post-processing checks rubric quality before writing `structured-jd.json`: mandatory
 requirement links are preserved or warned, required/core skills must trace to mandatory wording or a
-linked mandatory requirement, and contextual/helpful technologies are moved to `adjacent_skill_names`
-rather than being accepted as required/core.
+linked mandatory requirement, and contextual/helpful technologies are moved out of required/core.
+Explicit preferred/desirable/familiarity-priority wording is moved to `preferred_skill_names`.
+Contextual or transferable technology exposure is moved to `adjacent_skill_names`.
 
 Technical-stack criteria distinguish:
 
 - required/core components, such as PHP, Laravel, WordPress, and SQL/database management;
+- preferred components, such as GitHub, GitLab, React.js, Node.js, SEO, or analytics when they come
+  from `preferred_skill_names`;
 - controlled-equivalent evidence, such as PostgreSQL for a requirement that explicitly accepts
   MySQL-like enterprise databases;
 - adjacent or transferable full-stack components, such as JavaScript, React.js, Node.js, Express.js,
   Vue.js, REST APIs, frontend development, and backend development.
 
-Adjacent full-stack evidence can add at most one discrete scoring step and cannot replace a missing
-mandatory component. Adjacent-only evidence is capped at `0.25`; direct core evidence plus adjacent
-evidence may increase one step but remains capped at `0.75` while any core component is missing.
+Required/evaluation-dimension components have weight `1.0`, preferred components have weight `0.5`,
+and adjacent components have weight `0.25` for preferred-only criteria. When required components are
+present, preferred support contributes 25% of the criterion and adjacent evidence can add at most one
+discrete scoring step. Adjacent evidence cannot replace a missing mandatory component.
 Reports label these classes separately.
 The canonical structured field for this is `component_assessment`. It includes
-`required_core_components`, `controlled_equivalent_components`, `adjacent_components_considered`,
-`supported_core_components`, `supported_controlled_equivalents`, `supported_adjacent_components`,
-`missing_core_components`, per-component source/origin, per-component evidence references, and the
-source criterion hash. Skill and leadership criteria must populate this object.
+`required_core_components`, `preferred_components`, `controlled_equivalent_components`,
+`adjacent_components_considered`, `evaluation_dimension_components`, `supported_core_components`,
+`supported_preferred_components`, `supported_controlled_equivalents`, `supported_adjacent_components`,
+`supported_evaluation_dimensions`, `missing_core_components`, `missing_preferred_components`,
+`missing_evaluation_dimensions`, per-component source/origin, per-component evidence references, and
+the source criterion hash. Skill and leadership criteria must populate this object.
 Controlled-equivalent metadata is criterion-local: MySQL/PostgreSQL appears only when a criterion
 owns a database component through required skills, a linked database requirement, or its own explicit
 database definition. Criteria without database components have empty controlled-equivalent fields
 even if the candidate has database evidence elsewhere.
 
-Mixed criteria, such as experience plus SQL/MySQL, are split into independently evaluated
-components. Experience duration/relevance, SQL, MySQL, and any controlled database equivalent each
-carry their own source, classification, matched status, evidence, explanation, and missing state.
-The criterion score is computed from those independent components before mapping to the approved
-discrete fractions.
+Quantitative experience qualification is computed once per candidate/JD evaluation with one shared
+evaluation date. Mandatory eligibility, linked experience criteria, mixed criteria, completeness,
+and reports reuse the same `ExperienceQualification`: requirement status, confirmed months, required
+months, relevance result, role/date evidence, uncertainty, and explanation. Runtime validation
+rejects a criterion result that contradicts a linked met experience requirement at the same threshold.
+
+Mixed criteria, such as experience plus DevOps/GitHub/GitLab or SQL/MySQL, are split into
+independently evaluated components. Experience duration/relevance, required skills, preferred skills,
+and any controlled database equivalent each carry their own source, classification, matched status,
+evidence, explanation, and missing state. The criterion score is computed from those independent
+components before mapping to the approved discrete fractions.
 
 Soft-skill criteria use only their own `evaluation_dimensions`. Technical tools such as React.js,
-JavaScript, HTML, CSS, and databases do not directly satisfy communication, ownership, or
-proactivity. Additional technical-skill criteria use their own `preferred_skill_names`; soft-skill
-terms do not migrate into them.
+JavaScript, HTML, CSS, and databases do not directly satisfy communication, ownership, proactivity,
+or problem-solving. Generic responsibility verbs such as developed, built, designed, implemented, or
+collaborated do not create full soft-skill matches by themselves. Communication, ownership,
+proactivity, and problem-solving require dimension-specific trigger wording in the source evidence.
+Additional technical-skill criteria use their own `preferred_skill_names`; soft-skill terms do not
+migrate into them.
 
 Degree requirements are source-constrained: they may match only structured education entries and
 their evidence. Experience paragraphs, job titles, generic ML/AI mentions, leadership text, company
@@ -119,6 +136,12 @@ Final criterion `match_fraction` values are discrete: `0.00`, `0.25`, `0.50`, `0
 Weighted scores are `criterion.weight * match_fraction`; Python owns this arithmetic.
 Any positive `weighted_score` must carry at least one valid evidence reference.
 
+Adjacent provenance uses model B: `adjacent_skill_names` remains source-declared adjacent evidence
+from the structured JD, while scorer-added adjacent evidence is recorded separately under
+`inferred_adjacent_components` with an `adjacent_inference_rules` value such as
+`adjacent-skill rule v1: full-stack-transferable` or `adjacent-skill rule v1: git-hosting-related`.
+Reports must not present inferred adjacent skills as if Gemma placed them in the rubric.
+
 Evidence completeness is deterministic:
 
 1. Compute the fraction of evaluated criteria with at least one supported or partially supported,
@@ -133,8 +156,9 @@ Evidence completeness is deterministic:
 Evidence is deduplicated by stable source identity: source type, source document ID, page number,
 block index, and normalized or exact text. If one source block supports multiple facts, the evidence
 object appears once and its notes retain the matched facts. The report also includes completeness
-diagnostics for required/core component counts, adjacent component counts, deduplicated source count,
-and penalties.
-Adjacent components contribute at reduced weight in completeness diagnostics. Per-criterion
-diagnostics show total and supported required/core components, adjacent components, controlled
-equivalent components, supported controlled equivalents, and deduplicated source counts.
+diagnostics for required/core, preferred, adjacent, controlled-equivalent, and evaluation-dimension
+component counts, deduplicated source count, OCR/date factors, and penalties.
+Preferred gaps do not inflate missing-core penalties. Adjacent components contribute at reduced
+weight in completeness diagnostics. Per-criterion diagnostics show total and supported required/core,
+preferred, adjacent, evaluation-dimension, and controlled-equivalent components plus deduplicated
+source counts.

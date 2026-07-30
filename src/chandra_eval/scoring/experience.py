@@ -92,7 +92,12 @@ def total_experience_months(entries: list[ExperienceEntry]) -> int:
     return calculate_experience_duration(entries).confirmed_months
 
 
-def calculate_experience_duration(entries: list[ExperienceEntry]) -> ExperienceDurationResult:
+def calculate_experience_duration(
+    entries: list[ExperienceEntry],
+    *,
+    evaluation_date: date | None = None,
+) -> ExperienceDurationResult:
+    evaluation_date = evaluation_date or date.today()
     intervals: list[tuple[int, int]] = []
     uncertain: list[ExperienceRange] = []
     invalid: list[ExperienceRange] = []
@@ -101,7 +106,7 @@ def calculate_experience_duration(entries: list[ExperienceEntry]) -> ExperienceD
 
     for index, entry in enumerate(entries):
         start = parse_year_month(entry.start_date)
-        end = _end_year_month(entry.end_date, entry.currently_active)
+        end = _end_year_month(entry.end_date, entry.currently_active, evaluation_date)
         if entry.currently_active and start is not None and end is not None:
             current.append(
                 _range_from_entry(
@@ -148,10 +153,10 @@ def calculate_experience_duration(entries: list[ExperienceEntry]) -> ExperienceD
     )
 
 
-def _end_year_month(value: str | None, active: bool) -> tuple[int, int] | None:
+def _end_year_month(value: str | None, active: bool, evaluation_date: date | None = None) -> tuple[int, int] | None:
     if active and not value:
-        today = date.today()
-        return today.year, today.month
+        current = evaluation_date or date.today()
+        return current.year, current.month
     return parse_year_month(value)
 
 

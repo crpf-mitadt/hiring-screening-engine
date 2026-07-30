@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 import re
 
 from chandra_eval.scoring.experience import calculate_experience_duration
@@ -61,6 +62,7 @@ def qualify_quantitative_experience(
     *,
     required_months: int,
     requirement_text: str,
+    evaluation_date: date | None = None,
 ) -> ExperienceQualification:
     relevant_entries: list[ExperienceEntry] = []
     relevance_evidence: list[EvidenceRef] = []
@@ -70,7 +72,7 @@ def qualify_quantitative_experience(
             relevant_entries.append(entry)
             relevance_evidence.extend(entry_relevance_evidence)
 
-    duration = calculate_experience_duration(relevant_entries)
+    duration = calculate_experience_duration(relevant_entries, evaluation_date=evaluation_date)
     evidence: list[EvidenceRef] = []
     for entry in relevant_entries:
         evidence.extend(_entry_basis_evidence(entry, requirement_text))

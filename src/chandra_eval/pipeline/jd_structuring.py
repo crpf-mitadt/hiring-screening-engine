@@ -132,6 +132,12 @@ def _postprocess_jd_rubric(jd: StructuredJD, document_text: str) -> StructuredJD
             classification = _skill_classification(skill, criterion, jd, document_text, mandatory_skill_terms)
             if classification == "required/core":
                 required.append(skill)
+            elif classification == "preferred":
+                preferred.append(skill)
+                warnings.append(
+                    f"Rubric quality warning: moved {skill!r} from required_skill_names to preferred_skill_names "
+                    f"for {criterion.criterion_id}; source wording is preferred/helpful rather than mandatory."
+                )
             else:
                 adjacent.append(skill)
                 warnings.append(
@@ -182,6 +188,8 @@ def _skill_classification(
     snippets = _snippets_containing(document_text, skill)
     if any(_has_required_wording(snippet, skill) for snippet in snippets):
         return "required/core"
+    if any(_has_preferred_priority_wording(snippet, skill) for snippet in snippets):
+        return "preferred"
     if any(_has_preferred_wording(snippet, skill) for snippet in snippets):
         return "adjacent/transferable"
     return "adjacent/transferable"
@@ -197,6 +205,21 @@ def _has_preferred_wording(text: str, skill: str) -> bool:
     pattern = rf"\b(preferred|optional|helpful|beneficial|desirable|familiarity|exposure|nice to have|additional)\b[^.\n;]*\b{re.escape(skill)}\b"
     reverse = rf"\b{re.escape(skill)}\b[^.\n;]*\b(preferred|optional|helpful|beneficial|desirable|familiarity|exposure|nice to have|additional)\b"
     return bool(re.search(pattern, text, flags=re.IGNORECASE) or re.search(reverse, text, flags=re.IGNORECASE))
+
+
+def _has_preferred_priority_wording(text: str, skill: str) -> bool:
+    pattern = rf"\b(preferred|optional|beneficial|desirable|nice to have|additional)\b[^.\n;]*\b{re.escape(skill)}\b"
+    reverse = rf"\b{re.escape(skill)}\b[^.\n;]*\b(preferred|optional|beneficial|desirable|nice to have|additional)\b"
+    familiarity_helpful = rf"\bfamiliarity\b[^.\n;]*\b{re.escape(skill)}\b[^.\n;]*\b(helpful|preferred|beneficial|desirable)\b"
+    familiarity_required = rf"\bfamiliarity\b[^.\n;]*\b{re.escape(skill)}\b[^.\n;]*\b(required|mandatory|must)\b"
+    return bool(
+        re.search(pattern, text, flags=re.IGNORECASE)
+        or re.search(reverse, text, flags=re.IGNORECASE)
+        or (
+            re.search(familiarity_helpful, text, flags=re.IGNORECASE)
+            and not re.search(familiarity_required, text, flags=re.IGNORECASE)
+        )
+    )
 
 
 def _snippets_containing(text: str, skill: str) -> list[str]:

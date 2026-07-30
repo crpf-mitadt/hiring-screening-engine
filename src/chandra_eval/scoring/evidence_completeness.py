@@ -34,8 +34,14 @@ def evidence_completeness_diagnostics(
     source_keys: set[tuple] = set()
     total_core = 0
     supported_core = 0
+    total_preferred = 0
+    supported_preferred = 0
     total_adjacent = 0
     supported_adjacent = 0
+    total_dimensions = 0
+    supported_dimensions = 0
+    total_controlled = 0
+    supported_controlled = 0
     per_criterion: list[dict[str, Any]] = []
     criterion_scores: list[float] = []
     for evaluation in evaluations:
@@ -59,25 +65,50 @@ def evidence_completeness_diagnostics(
         components = evaluation.component_assessment.get("components", [])
         criterion_core = 0
         criterion_supported_core = 0
+        criterion_preferred = 0
+        criterion_supported_preferred = 0
         criterion_adjacent = 0
         criterion_supported_adjacent = 0
+        criterion_dimensions = 0
+        criterion_supported_dimensions = 0
         for component in components:
             component_class = component.get("class", "")
-            if component_class in {"required/core", "preferred/core"}:
+            if component_class == "required/core":
                 total_core += 1
                 criterion_core += 1
                 if component.get("matched"):
                     supported_core += 1
                     criterion_supported_core += 1
+            elif component_class == "preferred":
+                total_preferred += 1
+                criterion_preferred += 1
+                if component.get("matched"):
+                    supported_preferred += 1
+                    criterion_supported_preferred += 1
             elif component_class == "adjacent/transferable":
                 total_adjacent += 1
                 criterion_adjacent += 1
                 if component.get("matched"):
                     supported_adjacent += 1
                     criterion_supported_adjacent += 1
-        denominator = criterion_core + (criterion_adjacent * 0.5)
+            elif component_class == "evaluation_dimension":
+                total_dimensions += 1
+                criterion_dimensions += 1
+                if component.get("matched"):
+                    supported_dimensions += 1
+                    criterion_supported_dimensions += 1
+        controlled_components = evaluation.component_assessment.get("controlled_equivalent_components", [])
+        supported_controlled_equivalents = evaluation.component_assessment.get("supported_controlled_equivalents", [])
+        total_controlled += len(controlled_components)
+        supported_controlled += len(supported_controlled_equivalents)
+        denominator = criterion_core + criterion_dimensions + (criterion_preferred * 0.5) + (criterion_adjacent * 0.25)
         if denominator:
-            score = (criterion_supported_core + (criterion_supported_adjacent * 0.5)) / denominator
+            score = (
+                criterion_supported_core
+                + criterion_supported_dimensions
+                + (criterion_supported_preferred * 0.5)
+                + (criterion_supported_adjacent * 0.25)
+            ) / denominator
         else:
             score = 1.0 if in_scope_supported else 0.0
         criterion_scores.append(score)
@@ -86,10 +117,14 @@ def evidence_completeness_diagnostics(
                 "criterion_id": evaluation.criterion_id,
                 "total_required_components": criterion_core,
                 "supported_required_components": criterion_supported_core,
+                "total_preferred_components": criterion_preferred,
+                "supported_preferred_components": criterion_supported_preferred,
                 "total_adjacent_components": criterion_adjacent,
                 "supported_adjacent_components": criterion_supported_adjacent,
-                "controlled_equivalent_components": evaluation.component_assessment.get("controlled_equivalent_components", []),
-                "supported_controlled_equivalents": evaluation.component_assessment.get("supported_controlled_equivalents", []),
+                "total_evaluation_dimension_components": criterion_dimensions,
+                "supported_evaluation_dimension_components": criterion_supported_dimensions,
+                "controlled_equivalent_components": controlled_components,
+                "supported_controlled_equivalents": supported_controlled_equivalents,
                 "deduplicated_source_count": len(
                     {
                         (
@@ -113,14 +148,22 @@ def evidence_completeness_diagnostics(
         "per_criterion": per_criterion,
         "total_required_core_components": total_core,
         "supported_required_core_components": supported_core,
+        "total_preferred_components": total_preferred,
+        "supported_preferred_components": supported_preferred,
         "total_adjacent_components_considered": total_adjacent,
         "supported_adjacent_components": supported_adjacent,
+        "total_controlled_equivalent_components": total_controlled,
+        "supported_controlled_equivalents": supported_controlled,
+        "total_evaluation_dimension_components": total_dimensions,
+        "supported_evaluation_dimension_components": supported_dimensions,
         "deduplicated_source_count": len(source_keys),
         "date_warning_count": len(date_warnings or []),
         "date_score": 0.5 if date_warnings else 1.0,
         "ocr_score": 0.5 if "partial" in warning_text and "ocr" in warning_text else 1.0,
         "penalties": {
             "missing_core_components": max(0, total_core - supported_core),
+            "missing_preferred_components": max(0, total_preferred - supported_preferred),
+            "missing_evaluation_dimension_components": max(0, total_dimensions - supported_dimensions),
             "duplicate_sources_removed": sum(len(item.evidence) for item in evaluations) - len(source_keys),
         },
     }

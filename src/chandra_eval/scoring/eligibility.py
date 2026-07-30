@@ -1,6 +1,9 @@
 """Mandatory requirement gates."""
 
+from datetime import date
+
 from chandra_eval.scoring.experience import calculate_experience_duration
+from chandra_eval.scoring.experience_basis import ExperienceQualification
 from chandra_eval.scoring.education import evaluate_education_requirement
 from chandra_eval.scoring.experience_basis import qualify_quantitative_experience
 from chandra_eval.scoring.matching import build_candidate_evidence_index, match_qualitative_experience, match_requirement
@@ -12,6 +15,9 @@ from chandra_eval.schemas.resume import ScoringSafeProfile
 def evaluate_eligibility(
     candidate: ScoringSafeProfile,
     jd: StructuredJD,
+    *,
+    experience_qualifications: dict[str, ExperienceQualification] | None = None,
+    evaluation_date: date | None = None,
 ) -> EligibilityResult:
     checked: list[str] = []
     failed: list[str] = []
@@ -19,7 +25,8 @@ def evaluate_eligibility(
     requirement_statuses: dict[str, str] = {}
     requirement_details: list[dict] = []
     index = build_candidate_evidence_index(candidate)
-    duration = calculate_experience_duration(candidate.experience)
+    duration = calculate_experience_duration(candidate.experience, evaluation_date=evaluation_date)
+    experience_qualifications = experience_qualifications or {}
 
     for requirement in jd.mandatory_requirements:
         checked.append(requirement.requirement_id)
@@ -60,41 +67,44 @@ def evaluate_eligibility(
                     detail["missing_evidence"] = "No direct qualitative experience evidence found for this mandatory requirement."
                     detail["ambiguity"].extend(match.ambiguity)
                     ambiguous.append(requirement.requirement_id)
-            elif duration.confirmed_months >= int(requirement.minimum_value):
-                qualification = qualify_quantitative_experience(
+            else:
+                qualification = experience_qualifications.get(requirement.requirement_id) or qualify_quantitative_experience(
                     candidate,
                     required_months=int(requirement.minimum_value),
                     requirement_text=requirement.description,
+                    evaluation_date=evaluation_date,
                 )
-                if qualification.confirmed_months >= int(requirement.minimum_value) and qualification.evidence:
+                detail["confirmed_months"] = qualification.confirmed_months
+                detail["required_months"] = qualification.required_months
+                detail["fraction"] = qualification.fraction
+                detail["ambiguity"].extend(qualification.ambiguity)
+                if qualification.confirmed_months >= int(requirement.minimum_value) and qualification.evidence and qualification.fraction >= 1:
                     requirement_statuses[requirement.requirement_id] = "met"
                     detail["status"] = "met"
                     detail["evidence"] = [item.model_dump(mode="json") for item in qualification.evidence]
                     detail["explanation"] = qualification.explanation
-                else:
+                    detail["ambiguity"] = []
+                elif qualification.ambiguity and qualification.confirmed_months + duration.possible_additional_months >= int(requirement.minimum_value):
                     requirement_statuses[requirement.requirement_id] = "unclear"
                     detail["status"] = "unclear"
-                    detail["missing_evidence"] = "Numeric duration was sufficient, but relevant role/date evidence was not traceable."
-                    detail["ambiguity"].extend(qualification.ambiguity or [qualification.explanation])
+                    detail["missing_evidence"] = qualification.explanation
                     ambiguous.append(requirement.requirement_id)
-            elif duration.uncertain_ranges:
-                requirement_statuses[requirement.requirement_id] = "unclear"
-                detail["status"] = "unclear"
-                detail["ambiguity"].extend(duration.date_warnings)
-                ambiguous.append(requirement.requirement_id)
-            elif duration.confirmed_months == 0:
-                requirement_statuses[requirement.requirement_id] = "not_found"
-                detail["status"] = "not_found"
-                detail["missing_evidence"] = "No parseable experience date range found."
-                ambiguous.append(requirement.requirement_id)
-            else:
-                requirement_statuses[requirement.requirement_id] = "not_met"
-                detail["status"] = "not_met"
-                detail["missing_evidence"] = (
-                    f"Confirmed {duration.confirmed_months} months below "
-                    f"{int(requirement.minimum_value)} required months."
-                )
-                failed.append(requirement.requirement_id)
+                elif qualification.confirmed_months == 0 and duration.uncertain_ranges:
+                    requirement_statuses[requirement.requirement_id] = "unclear"
+                    detail["status"] = "unclear"
+                    detail["missing_evidence"] = qualification.explanation
+                    detail["ambiguity"].extend(duration.date_warnings)
+                    ambiguous.append(requirement.requirement_id)
+                elif qualification.confirmed_months == 0:
+                    requirement_statuses[requirement.requirement_id] = "not_found"
+                    detail["status"] = "not_found"
+                    detail["missing_evidence"] = qualification.explanation
+                    ambiguous.append(requirement.requirement_id)
+                else:
+                    requirement_statuses[requirement.requirement_id] = "not_met"
+                    detail["status"] = "not_met"
+                    detail["missing_evidence"] = qualification.explanation
+                    failed.append(requirement.requirement_id)
         elif requirement.category == RequirementCategory.EDUCATION:
             education_match = evaluate_education_requirement(requirement.description, candidate.education)
             if education_match.matched:

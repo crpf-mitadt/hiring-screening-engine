@@ -38,7 +38,7 @@ _STOPWORDS = {
 }
 
 _ALIASES: dict[str, tuple[str, ...]] = {
-    "git": ("github",),
+    "git": ("github", "gitlab"),
     "sql": ("mysql", "postgresql", "postgres"),
     "database management": ("mysql", "postgresql", "postgres", "database operations"),
     "enterprise database": ("mysql", "postgresql", "postgres"),
@@ -340,11 +340,13 @@ def _is_education_reason(reason: str) -> bool:
 
 def _term_options(normalized: str) -> list[str]:
     options = [normalized]
+    if normalized == "github":
+        options.append("github.com")
+    if normalized == "gitlab":
+        options.append("gitlab.com")
     if ("sql" in normalized and "database" in normalized) or "database management" in normalized:
         options.extend(("sql", "database management", "mysql", "postgresql", "postgres", "database operations"))
     options.extend(_ALIASES.get(normalized, ()))
-    if normalized == "github":
-        options.append("git")
     return _dedupe_terms(options)
 
 

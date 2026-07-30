@@ -698,12 +698,13 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertNotIn("React.js", by_id["crit_03"].explanation)
         self.assertNotIn("JavaScript", by_id["crit_03"].explanation)
         self.assertEqual(by_id["crit_03"].category, "leadership")
-        self.assertIn("Ownership", by_id["crit_03"].component_assessment["supported_core_components"])
-        self.assertIn("Proactivity", by_id["crit_03"].component_assessment["supported_core_components"])
+        self.assertIn("Ownership", by_id["crit_03"].component_assessment["supported_evaluation_dimensions"])
+        self.assertIn("Proactivity", by_id["crit_03"].component_assessment["supported_evaluation_dimensions"])
         self.assertEqual(by_id["crit_04"].match_fraction, 0)
-        self.assertIn("DevOps", by_id["crit_04"].missing_information)
-        self.assertIn("SEO", by_id["crit_04"].missing_information)
-        self.assertIn("UI/UX", by_id["crit_04"].missing_information)
+        self.assertIn("DevOps", by_id["crit_04"].component_assessment["missing_preferred_components"])
+        self.assertIn("SEO", by_id["crit_04"].component_assessment["missing_preferred_components"])
+        self.assertIn("UI/UX", by_id["crit_04"].component_assessment["missing_preferred_components"])
+        self.assertEqual(by_id["crit_04"].missing_information, [])
         self.assertNotIn("Proactive Problem Solving", str(by_id["crit_04"].model_dump()))
 
     def test_criterion_identity_is_stable_when_rubric_order_is_shuffled(self) -> None:
@@ -1005,9 +1006,191 @@ class ScoringCorrectnessTests(unittest.TestCase):
         report = evaluate_candidate(candidate.scoring_safe_profile, jd)
         criterion = report.criterion_evaluations[0]
 
-        self.assertEqual(criterion.component_assessment["required_core_components"], ["Proactive Problem Solving"])
-        self.assertEqual(criterion.missing_information, ["Proactive Problem Solving"])
+        self.assertEqual(criterion.component_assessment["required_core_components"], [])
+        self.assertEqual(criterion.component_assessment["preferred_components"], ["Proactive Problem Solving"])
+        self.assertEqual(criterion.component_assessment["missing_preferred_components"], ["Proactive Problem Solving"])
+        self.assertEqual(criterion.missing_information, [])
         self.assertNotIn("Communication, ownership", str(criterion.component_assessment))
+
+    def test_shared_experience_qualification_reused_by_linked_mixed_criterion(self) -> None:
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["Git"],
+                "experience": [
+                    {
+                        "title": "Software Developer",
+                        "organization": "Product Studio",
+                        "start_date": "2023-01",
+                        "end_date": "2025-07",
+                        "responsibilities": ["Delivered full-stack development for REST API products."],
+                        "evidence": [
+                            _evidence("Software Developer").model_dump(mode="json"),
+                            _evidence("January 2023 - July 2025").model_dump(mode="json"),
+                            _evidence("Delivered full-stack development for REST API products.").model_dump(mode="json"),
+                        ],
+                    }
+                ],
+            }
+        )
+        report = evaluate_candidate(candidate.scoring_safe_profile, self._experience_devops_jd())
+        criterion = report.criterion_evaluations[0]
+        detail = report.eligibility.requirement_details[0]
+        experience_component = criterion.component_assessment["components"][0]
+
+        self.assertEqual(detail["status"], "met")
+        self.assertEqual(detail["confirmed_months"], 30)
+        self.assertEqual(detail["required_months"], 24)
+        self.assertTrue(experience_component["matched"])
+        self.assertEqual(experience_component["term"], "Relevant experience duration/relevance")
+        self.assertIn("req_exp_01", experience_component["source"])
+        self.assertEqual(
+            {item["exact_text"] for item in detail["evidence"]},
+            {item["exact_text"] for item in experience_component["evidence"]},
+        )
+        self.assertIn("DevOps", criterion.component_assessment["missing_core_components"])
+        self.assertEqual(criterion.component_assessment["preferred_components"], ["GitLab", "GitHub"])
+        self.assertEqual(criterion.component_assessment["missing_preferred_components"], ["GitLab", "GitHub"])
+        self.assertNotIn("GitHub", criterion.component_assessment["supported_preferred_components"])
+        self.assertEqual(criterion.component_assessment["supported_adjacent_components"], ["Git version control"])
+
+    def test_insufficient_and_uncertain_experience_are_consistent(self) -> None:
+        jd = self._experience_devops_jd()
+
+        def score(start_date: str | None, end_date: str | None):
+            candidate = CandidateProfile.model_validate(
+                {
+                    "candidate_id": "candidate",
+                    "source_document_id": "resume",
+                    "experience": [
+                        {
+                            "title": "Software Developer",
+                            "organization": "Product Studio",
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "responsibilities": ["Delivered full-stack development for REST API products."],
+                            "evidence": [
+                                _evidence("Software Developer").model_dump(mode="json"),
+                                _evidence(str(start_date or "unknown")).model_dump(mode="json"),
+                                _evidence("Delivered full-stack development for REST API products.").model_dump(mode="json"),
+                            ],
+                        }
+                    ],
+                }
+            )
+            report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+            return report, report.criterion_evaluations[0].component_assessment["components"][0]
+
+        insufficient, insufficient_component = score("2025-01", "2025-12")
+        uncertain, uncertain_component = score("2024-01", None)
+
+        self.assertEqual(insufficient.eligibility.requirement_statuses["req_exp_01"], "not_met")
+        self.assertFalse(insufficient_component["matched"])
+        self.assertEqual(uncertain.eligibility.requirement_statuses["req_exp_01"], "unclear")
+        self.assertEqual(uncertain.criterion_evaluations[0].status, CriterionStatus.UNCLEAR)
+        self.assertFalse(uncertain_component["matched"])
+
+    def test_git_github_and_gitlab_exact_matching_boundaries(self) -> None:
+        def index_for(skills: list[str]):
+            candidate = CandidateProfile.model_validate(
+                {"candidate_id": "candidate", "source_document_id": "resume", "skills": skills}
+            )
+            return build_candidate_evidence_index(candidate.scoring_safe_profile)
+
+        self.assertEqual(match_terms(["GitHub"], index_for(["Git"])).fraction, 0)
+        self.assertEqual(match_terms(["GitHub"], index_for(["GitHub"])).fraction, 1)
+        self.assertEqual(match_terms(["GitHub"], index_for(["github.com/example"])).fraction, 1)
+        self.assertEqual(match_terms(["GitHub"], index_for(["GitLab"])).fraction, 0)
+        self.assertEqual(match_terms(["GitLab"], index_for(["Git"])).fraction, 0)
+
+        candidate = CandidateProfile.model_validate(
+            {"candidate_id": "candidate", "source_document_id": "resume", "skills": ["Git"]}
+        )
+        jd = self._experience_devops_jd()
+        criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+
+        self.assertEqual(criterion.component_assessment["supported_preferred_components"], [])
+        self.assertEqual(criterion.component_assessment["supported_adjacent_components"], ["Git version control"])
+
+    def test_mixed_required_preferred_adjacent_completeness_and_strengths_are_separate(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="mixed",
+                    name="Mixed Components",
+                    category=RequirementCategory.SKILL,
+                    description="Python required, GitHub preferred, JavaScript adjacent.",
+                    weight=100,
+                    required_skill_names=["Python"],
+                    preferred_skill_names=["GitHub"],
+                    adjacent_skill_names=["JavaScript"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {"candidate_id": "candidate", "source_document_id": "resume", "skills": ["Python", "JavaScript"]}
+        )
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        criterion = report.criterion_evaluations[0]
+        diagnostics = report.evidence_completeness_diagnostics
+
+        self.assertEqual(criterion.component_assessment["required_core_components"], ["Python"])
+        self.assertEqual(criterion.component_assessment["preferred_components"], ["GitHub"])
+        self.assertEqual(criterion.component_assessment["missing_core_components"], [])
+        self.assertEqual(criterion.component_assessment["missing_preferred_components"], ["GitHub"])
+        self.assertEqual(criterion.component_assessment["source_declared_adjacent_components"], ["JavaScript"])
+        self.assertEqual(diagnostics["total_required_core_components"], 1)
+        self.assertEqual(diagnostics["total_preferred_components"], 1)
+        self.assertEqual(diagnostics["penalties"]["missing_core_components"], 0)
+        self.assertEqual(diagnostics["penalties"]["missing_preferred_components"], 1)
+        self.assertTrue(any(item.startswith("required/core:") for item in report.strengths))
+        self.assertTrue(any(item.startswith("adjacent:") for item in report.strengths))
+        self.assertTrue(any(item.startswith("preferred gap:") for item in report.gaps))
+
+    def test_soft_skill_dimensions_require_dimension_specific_evidence(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="soft",
+                    name="Soft Skills",
+                    category=RequirementCategory.LEADERSHIP,
+                    description="Communication, ownership, proactivity, problem-solving.",
+                    weight=100,
+                    evaluation_dimensions=["Communication", "Ownership", "Proactivity", "Problem-solving"],
+                )
+            ],
+        )
+
+        def supported(responsibility: str) -> list[str]:
+            candidate = CandidateProfile.model_validate(
+                {
+                    "candidate_id": "candidate",
+                    "source_document_id": "resume",
+                    "experience": [
+                        {
+                            "responsibilities": [responsibility],
+                            "evidence": [_evidence(responsibility).model_dump(mode="json")],
+                        }
+                    ],
+                }
+            )
+            criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+            return criterion.component_assessment["supported_evaluation_dimensions"]
+
+        self.assertNotIn("Communication", supported("Collaborated with teams on routine delivery."))
+        self.assertNotIn("Ownership", supported("Developed a feature for the platform."))
+        self.assertNotIn("Proactivity", supported("Implemented an API for the product."))
+        self.assertIn("Ownership", supported("Owned the billing workstream and was accountable for delivery."))
+        self.assertIn("Proactivity", supported("Initiated an automation that reduced manual deployment work."))
+        self.assertIn("Communication", supported("Presented findings to stakeholders and authored documentation."))
+        self.assertIn("Problem-solving", supported("Diagnosed the outage root cause and resolved the production issue."))
 
     def test_met_experience_requirement_uses_explanation_not_ambiguity(self) -> None:
         candidate = CandidateProfile.model_validate(
@@ -1329,6 +1512,44 @@ class ScoringCorrectnessTests(unittest.TestCase):
                     weight=100,
                     requirement_ids=["req_exp"],
                     required_skill_names=["SQL", "MySQL"],
+                )
+            ],
+        )
+
+    def _experience_devops_jd(self) -> StructuredJD:
+        return StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Full Stack Developer",
+            minimum_experience_months=24,
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_exp_01",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Minimum 24 months of relevant full-stack development experience.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                    minimum_value=24,
+                    unit="months",
+                ),
+                JDRequirement(
+                    requirement_id="req_tech_03",
+                    category=RequirementCategory.SKILL,
+                    description="Familiarity with DevOps practices and tools for continuous integration and deployment.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                ),
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="crit_02",
+                    name="Experience and DevOps",
+                    category=RequirementCategory.EXPERIENCE,
+                    description="Relevant experience, DevOps, GitLab and GitHub.",
+                    weight=100,
+                    requirement_ids=["req_exp_01", "req_tech_03"],
+                    required_skill_names=["DevOps"],
+                    preferred_skill_names=["GitLab", "GitHub"],
                 )
             ],
         )

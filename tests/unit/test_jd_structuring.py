@@ -213,6 +213,72 @@ class JDStructuringTests(unittest.TestCase):
 
             self.assertIn("JavaScript", criterion.required_skill_names)
 
+    def test_familiarity_required_remains_mandatory_but_helpful_becomes_preferred(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            required_path = root / "required-jd.txt"
+            required_path.write_text("Familiarity with Docker is required.", encoding="utf-8")
+            helpful_path = root / "helpful-jd.txt"
+            helpful_path.write_text("Familiarity with Docker is helpful.", encoding="utf-8")
+
+            required_payload = {
+                "job_id": "job",
+                "source_document_id": "required-jd.txt",
+                "job_title": "Developer",
+                "mandatory_requirements": [
+                    {
+                        "requirement_id": "req-docker",
+                        "category": "skill",
+                        "description": "Familiarity with Docker is required.",
+                        "requirement_type": "minimum",
+                        "mandatory": True,
+                    }
+                ],
+                "scoring_rubric": [
+                    {
+                        "criterion_id": "docker",
+                        "name": "Docker",
+                        "category": "skill",
+                        "description": "Docker",
+                        "weight": 100,
+                        "requirement_ids": ["req-docker"],
+                        "required_skill_names": ["Docker"],
+                    }
+                ],
+            }
+            helpful_payload = {
+                "job_id": "job",
+                "source_document_id": "helpful-jd.txt",
+                "job_title": "Developer",
+                "scoring_rubric": [
+                    {
+                        "criterion_id": "docker",
+                        "name": "Docker",
+                        "category": "skill",
+                        "description": "Docker",
+                        "weight": 100,
+                        "required_skill_names": ["Docker"],
+                    }
+                ],
+            }
+
+            required = structure_jd_document_file(
+                required_path,
+                "job",
+                root / "required-out.json",
+                gemma_client=FakeGemmaClient(json.dumps(required_payload)),
+            )
+            helpful = structure_jd_document_file(
+                helpful_path,
+                "job",
+                root / "helpful-out.json",
+                gemma_client=FakeGemmaClient(json.dumps(helpful_payload)),
+            )
+
+        self.assertEqual(required.scoring_rubric[0].required_skill_names, ["Docker"])
+        self.assertEqual(helpful.scoring_rubric[0].required_skill_names, [])
+        self.assertEqual(helpful.scoring_rubric[0].preferred_skill_names, ["Docker"])
+
     def test_unlinked_mandatory_requirement_gets_rubric_warning(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
