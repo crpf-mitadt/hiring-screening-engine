@@ -271,6 +271,27 @@ def _score_criterion(
         education_match = evaluate_education_requirement(criterion.description, candidate.education)
         fraction = 1.0 if education_match.matched else 0.0
         scored_evidence = education_match.evidence if fraction > 0 else []
+        source_components = _criterion_components(criterion, jd, eligibility, index) if _criterion_has_source_components(criterion) else []
+        components = _finalize_components(
+            [
+                ComponentEvaluation(
+                    term=criterion.description,
+                    source="criterion description",
+                    component_class=CLASS_REQUIRED,
+                    matched=fraction > 0,
+                    evidence=scored_evidence,
+                    note="education criterion evaluated from education-specific evidence",
+                    source_requirement_ids=list(criterion.requirement_ids),
+                ),
+                *source_components,
+            ]
+        )
+        criterion_evidence = _dedupe_evidence(
+            evidence_item
+            for component in components
+            if component.matched
+            for evidence_item in component.evidence
+        )
         explanation = (
             "Matched education requirement components. "
             + "; ".join(education_match.notes)
@@ -288,18 +309,16 @@ def _score_criterion(
             weighted_score=round(criterion.weight * fraction, 6),
             status=_status(fraction, has_terms=True, ambiguous=bool(education_match.ambiguity)),
             explanation=explanation,
-            evidence=scored_evidence,
+            evidence=criterion_evidence,
             missing_information=education_match.missing,
             ambiguity=education_match.ambiguity,
             verification_needed=verification_needed,
             candidate_requirement=criterion.description,
-            evidence_found=_evidence_found(scored_evidence),
-            component_assessment=_single_component_assessment(
+            evidence_found=_evidence_found(criterion_evidence),
+            component_assessment=_component_assessment(
                 criterion,
-                term=criterion.description,
-                source="criterion description",
-                matched=fraction > 0,
-                evidence=scored_evidence,
+                components=components,
+                evidence=criterion_evidence,
             ),
         )
 
@@ -476,6 +495,16 @@ def _score_skill_criterion(
         components,
         verification_needed=verification_needed,
         candidate_requirement=criterion.description,
+    )
+
+
+def _criterion_has_source_components(criterion: ScoringCriterion) -> bool:
+    return bool(
+        criterion.required_skill_names
+        or criterion.preferred_skill_names
+        or criterion.adjacent_skill_names
+        or criterion.evaluation_dimensions
+        or criterion.requirement_ids
     )
 
 

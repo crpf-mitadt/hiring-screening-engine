@@ -1,4 +1,5 @@
 import json
+import importlib.util
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -18,6 +19,15 @@ from chandra_eval.schemas.resume import CandidateProfile
 
 def _evidence(text: str, source: str = "resume_ocr") -> EvidenceRef:
     return EvidenceRef(source_type=source, source_document_id="resume", exact_text=text, normalized_text=text)
+
+
+def _load_invariant_validator():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "validate_evaluation_invariants.py"
+    spec = importlib.util.spec_from_file_location("validate_evaluation_invariants", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 class ScoringCorrectnessTests(unittest.TestCase):
@@ -855,6 +865,130 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertEqual(result_by_id["crit_04"].component_assessment["preferred_skill_names"], ["DevOps", "SEO", "UI/UX"])
         self.assertNotIn("Proactive Problem Solving", str(result_by_id["crit_04"].model_dump()))
         self.assertIn("Experience & Domain Fit", report.strengths)
+
+    def test_sanitized_live_assistant_professor_fixture_retains_unmatched_data_science(self) -> None:
+        fixture = self._assistant_professor_fixture()
+        jd = self._assistant_professor_fixture_jd(fixture)
+        candidate = CandidateProfile.model_validate({"candidate_id": "candidate", "source_document_id": "resume"})
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            candidate_path = root / "structured-resume.json"
+            jd_path = root / "structured-jd.json"
+            output_path = root / "evaluation.json"
+            candidate_path.write_text(json.dumps(candidate.model_dump(mode="json"), indent=2), encoding="utf-8")
+            jd_path.write_text(json.dumps(jd.model_dump(mode="json"), indent=2), encoding="utf-8")
+
+            report = evaluate_candidate_files(candidate_path, jd_path, output_path)
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+        criterion = next(item for item in report.criterion_evaluations if item.criterion_id == "crit_001")
+        data_science = self._single_source_term_component(criterion.component_assessment["components"], "adjacent_skill_names", "Data Science")
+
+        self.assertFalse(data_science["matched"])
+        self.assertEqual(data_science["evidence"], [])
+        self.assertIn("adjacent_skill_names", data_science["source_fields"])
+        self.assertEqual(data_science["source_terms"]["adjacent_skill_names"], ["Data Science"])
+        self.assertEqual(criterion.weighted_score, 0)
+        self.assertEqual(criterion.component_assessment["supported_adjacent_components"], [])
+        self.assertEqual(criterion.component_assessment["source_declared_adjacent_components"], ["Data Science"])
+        reloaded = type(report).model_validate_json(report.model_dump_json())
+        self.assertEqual(
+            reloaded.criterion_evaluations[0].component_assessment,
+            report.criterion_evaluations[0].component_assessment,
+        )
+        validator = _load_invariant_validator()
+        checks = validator._checks(payload, jd=jd.model_dump(mode="json"), resume=candidate.model_dump(mode="json"), ocr_metadata=None, csv_report=None, html_report=None)
+        self.assertFalse([check for check in checks if check[1] is False])
+
+    def test_sanitized_live_assistant_professor_fixture_matches_data_science_with_evidence(self) -> None:
+        fixture = self._assistant_professor_fixture()
+        jd = self._assistant_professor_fixture_jd(fixture)
+        evidence_text = "Data Science research and teaching portfolio."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["Data Science"],
+                "experience": [
+                    {
+                        "responsibilities": [evidence_text],
+                        "evidence": [_evidence(evidence_text).model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+
+        first = evaluate_candidate(candidate.scoring_safe_profile, jd, evaluation_id="eval-live-fixture")
+        second = evaluate_candidate(candidate.scoring_safe_profile, jd, evaluation_id="eval-live-fixture")
+        criterion = next(item for item in first.criterion_evaluations if item.criterion_id == "crit_001")
+        data_science = self._single_source_term_component(criterion.component_assessment["components"], "adjacent_skill_names", "Data Science")
+
+        self.assertTrue(data_science["matched"])
+        self.assertGreater(len(data_science["evidence"]), 0)
+        self.assertIn("adjacent_skill_names", data_science["source_fields"])
+        self.assertEqual(data_science["source_terms"]["adjacent_skill_names"], ["Data Science"])
+        self.assertEqual(first.model_dump(mode="json"), second.model_dump(mode="json"))
+
+    def test_source_assembly_creates_unmatched_academic_components_for_all_source_families(self) -> None:
+        fixture = self._assistant_professor_fixture()
+        source_cases = [
+            ("required_skill_names", "Quantum Pedagogy"),
+            ("preferred_skill_names", "Curriculum Analytics"),
+            ("adjacent_skill_names", "Data Science"),
+            ("evaluation_dimensions", "Scholarly Communication"),
+        ]
+        for field_name, term in source_cases:
+            with self.subTest(field=field_name):
+                criterion = dict(fixture["criterion"])
+                criterion["weight"] = 100.0
+                criterion["requirement_ids"] = []
+                criterion["required_skill_names"] = []
+                criterion["preferred_skill_names"] = []
+                criterion["adjacent_skill_names"] = []
+                criterion["evaluation_dimensions"] = []
+                criterion[field_name] = [term]
+                jd = StructuredJD(
+                    job_id=f"job-{field_name}",
+                    source_document_id="jd",
+                    job_title="Academic Role",
+                    scoring_rubric=[criterion],
+                )
+                candidate = CandidateProfile.model_validate({"candidate_id": "candidate", "source_document_id": "resume"})
+                report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+                components = report.criterion_evaluations[0].component_assessment["components"]
+                component = self._single_source_term_component(components, field_name, term)
+                self.assertFalse(component["matched"])
+                self.assertEqual(component["evidence"], [])
+                self.assertIn(field_name, component["source_fields"])
+
+        requirement = JDRequirement(
+            requirement_id="req_academic",
+            category=RequirementCategory.EDUCATION,
+            description="Archival Methods requirement.",
+            requirement_type=RequirementType.MINIMUM,
+            mandatory=True,
+        )
+        jd = StructuredJD(
+            job_id="job-linked",
+            source_document_id="jd",
+            job_title="Academic Role",
+            mandatory_requirements=[requirement],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="crit_001",
+                    name="Linked Requirement",
+                    category=RequirementCategory.EDUCATION,
+                    description="Linked requirement",
+                    weight=100,
+                    requirement_ids=["req_academic"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate({"candidate_id": "candidate", "source_document_id": "resume"})
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+        components = report.criterion_evaluations[0].component_assessment["components"]
+        self.assertTrue(SourceRepresentationIndex(components).requirement_is_represented("req_academic"))
 
     def test_controlled_database_equivalents_stay_with_database_owner(self) -> None:
         db_text = "Optimized PostgreSQL/MySQL database operations for reliability and performance."
@@ -2209,6 +2343,49 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertEqual(complete, 1)
         self.assertLess(degraded, complete)
         self.assertEqual(none, 0)
+
+    def _assistant_professor_fixture(self) -> dict:
+        return json.loads(
+            Path("tests/fixtures/live_regressions/assistant-professor-bca-mca-crit-001.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def _assistant_professor_fixture_jd(self, fixture: dict) -> StructuredJD:
+        filler = ScoringCriterion(
+            criterion_id="filler",
+            name="Filler",
+            category=RequirementCategory.OTHER,
+            description="Filler criterion to keep fixture criterion weight unchanged.",
+            weight=60.0,
+        )
+        return StructuredJD.model_validate(
+            {
+                "job_id": "job-live-regression",
+                "source_document_id": "sanitized-live-jd",
+                "job_title": fixture["jd_context"]["job_title"],
+                "domain": fixture["jd_context"]["domain"],
+                "seniority": fixture["jd_context"]["seniority"],
+                "required_skills": fixture["jd_context"]["required_skills"],
+                "preferred_skills": fixture["jd_context"]["preferred_skills"],
+                "minimum_experience_months": fixture["jd_context"]["minimum_experience_months"],
+                "mandatory_requirements": fixture["linked_requirements"],
+                "scoring_rubric": [fixture["criterion"], filler.model_dump(mode="json")],
+            }
+        )
+
+    def _single_source_term_component(self, components: list[dict], source_field: str, term: str) -> dict:
+        matches = [
+            component
+            for component in components
+            if component.get("source_terms", {}).get(source_field) == [term]
+        ]
+        self.assertEqual(
+            len(matches),
+            1,
+            f"expected one source component for {source_field}:{term}: {matches or components}",
+        )
+        return matches[0]
 
     def _full_stack_jd(self) -> StructuredJD:
         return StructuredJD(

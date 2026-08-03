@@ -54,6 +54,14 @@ def main() -> int:
     check("evidence-less trigger case", lambda: _soft_skill_case(with_evidence=False))
     check("required/preferred/adjacent overlap", lambda: _data_science_overlap_case(matched=True))
     check("Data Science merged-provenance matrix", lambda: _data_science_overlap_case(matched=False))
+    check(
+        "sanitized live Assistant Professor Data Science regression unmatched",
+        lambda: _sanitized_live_assistant_professor_case(matched=False),
+    )
+    check(
+        "sanitized live Assistant Professor Data Science regression matched",
+        lambda: _sanitized_live_assistant_professor_case(matched=True),
+    )
     if pilot:
         check("report consistency validation", lambda: _report_consistency(Path(pilot)))
         check("privacy validation", lambda: _privacy_validation(Path(pilot)))
@@ -233,6 +241,91 @@ def _data_science_overlap_case(*, matched: bool) -> str:
     if not canonical:
         raise AssertionError("merged required+adjacent component missing")
     return f"score={report.final_score}"
+
+
+def _sanitized_live_assistant_professor_case(*, matched: bool) -> str:
+    fixture = _assistant_professor_fixture()
+    jd = _assistant_professor_fixture_jd(fixture)
+    if matched:
+        evidence_text = "Data Science research and teaching portfolio."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "assistant-professor-matched",
+                "source_document_id": "resume",
+                "skills": ["Data Science"],
+                "experience": [
+                    {
+                        "responsibilities": [evidence_text],
+                        "evidence": [_evidence(evidence_text).model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+    else:
+        candidate = CandidateProfile.model_validate(
+            {"candidate_id": "assistant-professor-unmatched", "source_document_id": "resume"}
+        )
+
+    report = evaluate_candidate(candidate.scoring_safe_profile, jd, evaluation_id="assistant-professor-regression")
+    criterion = next(item for item in report.criterion_evaluations if item.criterion_id == "crit_001")
+    components = criterion.component_assessment["components"]
+    data_science = _single_source_term_component(components, "adjacent_skill_names", "Data Science")
+    if data_science["matched"] is not matched:
+        raise AssertionError(f"Data Science matched={data_science['matched']} expected {matched}")
+    if data_science["source_terms"]["adjacent_skill_names"] != ["Data Science"]:
+        raise AssertionError("Data Science source term provenance changed")
+    if "adjacent_skill_names" not in data_science["source_fields"]:
+        raise AssertionError("Data Science source field provenance missing")
+    if matched and not data_science["evidence"]:
+        raise AssertionError("matched Data Science component has no evidence")
+    if not matched and data_science["evidence"]:
+        raise AssertionError("unmatched Data Science component has evidence")
+    if not SourceRepresentationIndex(components).term_is_represented("Data Science", "adjacent_skill_names"):
+        raise AssertionError("Data Science adjacent provenance missing")
+    return "matched retained" if matched else "unmatched retained"
+
+
+def _assistant_professor_fixture() -> dict[str, Any]:
+    return json.loads(
+        Path("tests/fixtures/live_regressions/assistant-professor-bca-mca-crit-001.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _assistant_professor_fixture_jd(fixture: dict[str, Any]) -> StructuredJD:
+    filler = ScoringCriterion(
+        criterion_id="filler",
+        name="Filler",
+        category=RequirementCategory.OTHER,
+        description="Filler criterion to keep fixture criterion weight unchanged.",
+        weight=60.0,
+    )
+    return StructuredJD.model_validate(
+        {
+            "job_id": "job-live-regression",
+            "source_document_id": "sanitized-live-jd",
+            "job_title": fixture["jd_context"]["job_title"],
+            "domain": fixture["jd_context"]["domain"],
+            "seniority": fixture["jd_context"]["seniority"],
+            "required_skills": fixture["jd_context"]["required_skills"],
+            "preferred_skills": fixture["jd_context"]["preferred_skills"],
+            "minimum_experience_months": fixture["jd_context"]["minimum_experience_months"],
+            "mandatory_requirements": fixture["linked_requirements"],
+            "scoring_rubric": [fixture["criterion"], filler.model_dump(mode="json")],
+        }
+    )
+
+
+def _single_source_term_component(components: list[dict[str, Any]], source_field: str, term: str) -> dict[str, Any]:
+    matches = [
+        component
+        for component in components
+        if component.get("source_terms", {}).get(source_field) == [term]
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one source component for {source_field}:{term}: {matches or components}")
+    return matches[0]
 
 
 def _report_consistency(pilot_output: Path) -> str:
