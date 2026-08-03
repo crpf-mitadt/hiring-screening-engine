@@ -1,0 +1,63 @@
+{
+  "fixture_version": "report-contract-v1",
+  "case_id": "admission-counsellor-candidate-001-report-shape",
+  "final_score": 20.0,
+  "eligibility": "REVIEW",
+  "evidence_completeness": 0.514,
+  "criteria": [
+    {
+      "criterion_id": "crit_admissions_core",
+      "criterion_name": "Admissions Counselling Core",
+      "category": "skill",
+      "weight": 40.0,
+      "match_fraction": 0.5,
+      "weighted_score": 20.0,
+      "components": [
+        {
+          "term": "Admissions counselling",
+          "class": "required/core",
+          "source": "required_skill_names",
+          "source_fields": ["required_skill_names"],
+          "evidence_count": 1
+        },
+        {
+          "term": "Parent & student engagement",
+          "class": "preferred",
+          "source": "preferred_skill_names",
+          "source_fields": ["preferred_skill_names"],
+          "evidence_count": 1
+        },
+        {
+          "term": "Campus / field outreach",
+          "class": "adjacent/transferable",
+          "source": "adjacent_skill_names",
+          "source_fields": ["adjacent_skill_names"],
+          "evidence_count": 1
+        },
+        {
+          "term": "Communication clarity",
+          "class": "evaluation_dimension",
+          "source": "evaluation_dimensions",
+          "source_fields": ["evaluation_dimensions"],
+          "evidence_count": 1,
+          "shared_evidence_with": ["Parent & student engagement"]
+        },
+        {
+          "term": "CRM (lead-tracking)",
+          "class": "controlled equivalent",
+          "source": "controlled_equivalent",
+          "source_fields": ["required_skill_names", "accepted_equivalents"],
+          "evidence_count": 1
+        }
+      ],
+      "unmatched_components": [
+        {
+          "term": "Scholarship coordination",
+          "class": "preferred",
+          "source": "preferred_skill_names",
+          "source_fields": ["preferred_skill_names"]
+        }
+      ]
+    }
+  ]
+}

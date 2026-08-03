@@ -1,0 +1,92 @@
+{
+  "candidate_id": "candidate-001",
+  "source_document_id": "synthetic-resume-001",
+  "summary": "Software engineer with OCR evaluation and reporting experience.",
+  "education": [
+    {
+      "degree_level": "bachelor",
+      "degree_name": "B.Tech",
+      "field_of_study": "Computer Science",
+      "institution": "Synthetic Institute",
+      "completion_status": "completed",
+      "evidence": [
+        {
+          "source_type": "resume_ocr",
+          "source_document_id": "synthetic-resume-001",
+          "page_number": 1,
+          "block_index": 1,
+          "exact_text": "B.Tech Computer Science, Synthetic Institute",
+          "normalized_text": "B.Tech Computer Science, Synthetic Institute"
+        }
+      ]
+    }
+  ],
+  "experience": [
+    {
+      "title": "Software Engineer",
+      "organization": "Synthetic Labs",
+      "industry_or_domain": "document AI",
+      "employment_type": "full-time",
+      "start_date": "2021-01",
+      "end_date": "2025-01",
+      "start_date_precision": "month",
+      "end_date_precision": "month",
+      "currently_active": false,
+      "responsibilities": ["Built OCR evaluation pipelines"],
+      "achievements": ["Created auditable reports"],
+      "skills_used": ["Python", "OCR", "Pydantic", "reporting"],
+      "evidence": [
+        {
+          "source_type": "resume_ocr",
+          "source_document_id": "synthetic-resume-001",
+          "page_number": 1,
+          "block_index": 2,
+          "exact_text": "Software Engineer",
+          "normalized_text": "Software Engineer"
+        },
+        {
+          "source_type": "resume_ocr",
+          "source_document_id": "synthetic-resume-001",
+          "page_number": 1,
+          "block_index": 3,
+          "exact_text": "Synthetic Labs",
+          "normalized_text": "Synthetic Labs"
+        },
+        {
+          "source_type": "resume_ocr",
+          "source_document_id": "synthetic-resume-001",
+          "page_number": 1,
+          "block_index": 4,
+          "exact_text": "January 2021 - January 2025",
+          "normalized_text": "January 2021 - January 2025"
+        },
+        {
+          "source_type": "resume_ocr",
+          "source_document_id": "synthetic-resume-001",
+          "page_number": 1,
+          "block_index": 5,
+          "exact_text": "Built OCR evaluation pipelines",
+          "normalized_text": "Built OCR evaluation pipelines"
+        }
+      ]
+    }
+  ],
+  "skills": ["Python", "OCR", "evaluation", "data validation", "Pydantic"],
+  "certifications": [],
+  "projects": ["Resume OCR evaluation pipeline"],
+  "publications": [],
+  "teaching_experience": [],
+  "research_experience": ["OCR layout assessment"],
+  "leadership_experience": [],
+  "achievements": ["Reduced manual review effort with structured outputs"],
+  "languages": ["English"],
+  "missing_information": [],
+  "extraction_warnings": [],
+  "source_pages": [1],
+  "personal_information": {
+    "name": "Synthetic Candidate",
+    "email": "candidate@example.test",
+    "phone": "+1-555-0100",
+    "address": "Private"
+  }
+}

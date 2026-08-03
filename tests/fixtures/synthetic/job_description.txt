@@ -1,0 +1,5 @@
+Title: Research Software Engineer
+Build OCR evaluation tools and reliable candidate matching reports for document processing workflows.
+Required skills: Python, OCR, evaluation, data validation
+Preferred skills: Pydantic, reporting
+Minimum experience: 3 years

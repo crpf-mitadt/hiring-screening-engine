@@ -1,0 +1,63 @@
+{
+  "fixture_version": "report-contract-v1",
+  "case_id": "admission-counsellor-candidate-003-report-shape",
+  "final_score": 10.0,
+  "eligibility": "REVIEW",
+  "evidence_completeness": 0.429,
+  "criteria": [
+    {
+      "criterion_id": "crit_special_chars",
+      "criterion_name": "Report Text Normalization",
+      "category": "skill",
+      "weight": 40.0,
+      "match_fraction": 0.25,
+      "weighted_score": 10.0,
+      "components": [
+        {
+          "term": "Calls & follow-up",
+          "class": "required/core",
+          "source": "required_skill_names",
+          "source_fields": ["required_skill_names"],
+          "evidence_count": 1
+        },
+        {
+          "term": "O\u2019Level counselling",
+          "class": "preferred",
+          "source": "preferred_skill_names",
+          "source_fields": ["preferred_skill_names"],
+          "evidence_count": 1
+        },
+        {
+          "term": "Policy <compliance>",
+          "class": "evaluation_dimension",
+          "source": "evaluation_dimensions",
+          "source_fields": ["evaluation_dimensions"],
+          "evidence_count": 1
+        },
+        {
+          "term": "R\u00e9sum\u00e9 review / documentation",
+          "class": "adjacent/transferable",
+          "source": "adjacent_skill_names",
+          "source_fields": ["adjacent_skill_names"],
+          "evidence_count": 1
+        },
+        {
+          "term": "Face-to-face (walk-in) counselling",
+          "class": "required/core",
+          "source": "linked requirement req_walk_in",
+          "source_fields": ["linked requirement"],
+          "source_requirement_ids": ["req_walk_in"],
+          "evidence_count": 1
+        }
+      ],
+      "unmatched_components": [
+        {
+          "term": "Unmatched hidden term & value",
+          "class": "preferred",
+          "source": "preferred_skill_names",
+          "source_fields": ["preferred_skill_names"]
+        }
+      ]
+    }
+  ]
+}
