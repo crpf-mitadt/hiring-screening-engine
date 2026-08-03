@@ -261,7 +261,11 @@ class MatchWorkflowTests(unittest.TestCase):
             self.assertEqual(len({row["structured_jd_hash"] for row in rows if row["structured_jd_hash"]}), 1)
             self.assertTrue(all(row["shared_jd_hash_proven"] for row in rows))
             summary = json.loads((output / "comparison.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["schema_version"], "match-matrix-comparison-v1")
             self.assertEqual(summary["status_counts"]["PASS"], 1)
+            self.assertEqual(rows[0]["scoring_version"], "scoring-v2-evidence-discrete")
+            self.assertEqual(rows[0]["eligibility"], "PASS")
+            self.assertEqual(rows[0]["human_review_required"], True)
             csv_columns = (output / "comparison.csv").read_text(encoding="utf-8").splitlines()[0].split(",")
             tsv_columns = (output / "comparison.tsv").read_text(encoding="utf-8").splitlines()[0].split("\t")
             self.assertEqual(csv_columns, tsv_columns)
@@ -316,6 +320,42 @@ class MatchWorkflowTests(unittest.TestCase):
             self.assertEqual(rows[0]["status"], "VALIDATOR_FAIL")
             self.assertEqual(rows[0]["validator_exit_status"], 2)
             self.assertIn("Traceback", rows[0]["error"])
+
+    def test_matrix_manifest_validation_reports_path_and_duplicate_errors(self) -> None:
+        matrix = _load_matrix_script()
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "matrix"
+            jd = root / "structured-jd.json"
+            resume = root / "resume.json"
+            jd.write_text("{}", encoding="utf-8")
+            resume.write_text("{}", encoding="utf-8")
+            manifest = {
+                "schema_version": "match-matrix-manifest-v1",
+                "pairs": [
+                    {
+                        "test_name": "one",
+                        "jd_group": "group",
+                        "job_id": "job",
+                        "candidate_id": "candidate",
+                        "structured_jd": str(jd),
+                        "structured_resume": str(resume),
+                    },
+                    {
+                        "test_name": "duplicate",
+                        "jd_group": "group",
+                        "job_id": "job",
+                        "candidate_id": "candidate",
+                        "structured_jd": str(root / "missing.json"),
+                        "structured_resume": str(resume),
+                    },
+                ],
+            }
+
+            errors = matrix.validate_manifest(manifest, output)
+
+            self.assertTrue(any("duplicate" in error for error in errors))
+            self.assertTrue(any("not found" in error for error in errors))
 
 
 if __name__ == "__main__":

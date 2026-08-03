@@ -32,6 +32,11 @@ from chandra_eval.scoring.matching import (
     _dedupe_terms,
 )
 from chandra_eval.scoring.normalization import normalize_token
+from chandra_eval.scoring.provenance import (
+    SourceRepresentationIndex,
+    canonical_source_term,
+    represented_source_fields,
+)
 from chandra_eval.schemas.common import EvidenceRef, EvidenceStatus
 from chandra_eval.schemas.evaluation import (
     CandidateEvaluationReport,
@@ -121,6 +126,8 @@ class ComponentEvaluation:
     note: str = ""
     shared_evidence_with: list[str] = field(default_factory=list)
     source_fields: list[str] = field(default_factory=list)
+    source_requirement_ids: list[str] = field(default_factory=list)
+    source_terms: dict[str, list[str]] = field(default_factory=dict)
 
 
 def discrete_match_fraction(value: float) -> float:
@@ -590,7 +597,15 @@ def _criterion_components(
 ) -> list[ComponentEvaluation]:
     components = _owned_components(criterion, jd, include_linked_experience=include_linked_experience)
     components = [
-        _match_component(component.term, index, source=component.source, component_class=component.component_class)
+        _match_component(
+            component.term,
+            index,
+            source=component.source,
+            component_class=component.component_class,
+            source_fields=component.source_fields,
+            source_requirement_ids=component.source_requirement_ids,
+            source_terms=component.source_terms,
+        )
         for component in components
     ]
     components = _merge_linked_requirement_components(
@@ -613,16 +628,31 @@ def _owned_components(
 ) -> list[ComponentEvaluation]:
     components: list[ComponentEvaluation] = []
     for term in criterion.required_skill_names:
-        components.append(ComponentEvaluation(term=term, source="required_skill_names", component_class=CLASS_REQUIRED))
+        components.append(_source_component(term, "required_skill_names", CLASS_REQUIRED))
     for term in criterion.preferred_skill_names:
-        components.append(ComponentEvaluation(term=term, source="preferred_skill_names", component_class=CLASS_PREFERRED))
+        components.append(_source_component(term, "preferred_skill_names", CLASS_PREFERRED))
     linked_ids = set(criterion.requirement_ids)
     for requirement in [*jd.mandatory_requirements, *jd.preferred_requirements]:
         if not include_linked_experience and requirement.category == RequirementCategory.EXPERIENCE:
             continue
-        if requirement.requirement_id in linked_ids and not _requirement_represented(
-            requirement.description, [item.term for item in components]
-        ):
+        if requirement.requirement_id not in linked_ids:
+            continue
+        represented_index = _requirement_component_index(requirement.description, components)
+        if represented_index is not None:
+            component = components[represented_index]
+            components[represented_index] = ComponentEvaluation(
+                term=component.term,
+                source=_merge_component_sources(component.source, f"linked requirement {requirement.requirement_id}"),
+                component_class=component.component_class,
+                matched=component.matched,
+                evidence=component.evidence,
+                note=component.note,
+                shared_evidence_with=component.shared_evidence_with,
+                source_fields=component.source_fields,
+                source_requirement_ids=_dedupe_terms([*component.source_requirement_ids, requirement.requirement_id]),
+                source_terms=component.source_terms,
+            )
+        else:
             component_class = CLASS_REQUIRED if requirement.mandatory else CLASS_PREFERRED
             for term in _linked_requirement_component_terms(requirement.description):
                 components.append(
@@ -630,16 +660,17 @@ def _owned_components(
                         term=term,
                         source=f"linked requirement {requirement.requirement_id}",
                         component_class=component_class,
+                        source_requirement_ids=[requirement.requirement_id],
                     )
                 )
     if not components and criterion.mandatory and _default_required_skill_criterion(criterion):
         components.extend(
-            ComponentEvaluation(term=term, source="required_skills", component_class=CLASS_REQUIRED)
+            _source_component(term, "required_skills", CLASS_REQUIRED)
             for term in jd.required_skills
         )
     if not components and not criterion.mandatory and _default_preferred_skill_criterion(criterion):
         components.extend(
-            ComponentEvaluation(term=term, source="preferred_skills", component_class=CLASS_PREFERRED)
+            _source_component(term, "preferred_skills", CLASS_PREFERRED)
             for term in jd.preferred_skills
         )
     if not components and not criterion.adjacent_skill_names and not criterion.evaluation_dimensions:
@@ -651,6 +682,16 @@ def _owned_components(
             )
         )
     return _dedupe_components(components)
+
+
+def _source_component(term: str, source_field: str, component_class: str) -> ComponentEvaluation:
+    return ComponentEvaluation(
+        term=term,
+        source=source_field,
+        component_class=component_class,
+        source_fields=[source_field],
+        source_terms={source_field: [term]},
+    )
 
 
 def _linked_requirement_component_terms(description: str) -> list[str]:
@@ -682,7 +723,23 @@ def _requirement_represented(description: str, terms: list[str]) -> bool:
     return any(_contains_phrase(requirement_norm, normalize_token(term)) for term in terms)
 
 
-def _match_component(term: str, index: list[EvidenceText], *, source: str, component_class: str) -> ComponentEvaluation:
+def _requirement_component_index(description: str, components: list[ComponentEvaluation]) -> int | None:
+    for index, component in enumerate(components):
+        if _component_related_to_requirement(component.term, description):
+            return index
+    return None
+
+
+def _match_component(
+    term: str,
+    index: list[EvidenceText],
+    *,
+    source: str,
+    component_class: str,
+    source_fields: list[str] | None = None,
+    source_requirement_ids: list[str] | None = None,
+    source_terms: dict[str, list[str]] | None = None,
+) -> ComponentEvaluation:
     match = match_requirement(term, index) if _is_database_component(term) else match_terms([term], index)
     return ComponentEvaluation(
         term=term,
@@ -691,6 +748,9 @@ def _match_component(term: str, index: list[EvidenceText], *, source: str, compo
         matched=match.fraction > 0 and bool(match.evidence),
         evidence=match.evidence,
         note="matched direct or controlled-equivalent evidence" if match.evidence else "",
+        source_fields=source_fields or [],
+        source_requirement_ids=source_requirement_ids or [],
+        source_terms=source_terms or {},
     )
 
 
@@ -728,6 +788,10 @@ def _merge_linked_requirement_components(
                     matched=True,
                     evidence=_dedupe_evidence([*component.evidence, *evidence]),
                     note=f"linked requirement {requirement_id} supplied validated evidence",
+                    shared_evidence_with=component.shared_evidence_with,
+                    source_fields=component.source_fields,
+                    source_requirement_ids=_dedupe_terms([*component.source_requirement_ids, requirement_id]),
+                    source_terms=component.source_terms,
                 )
                 merged = True
                 break
@@ -740,6 +804,7 @@ def _merge_linked_requirement_components(
                     matched=True,
                     evidence=evidence,
                     note=f"linked requirement {requirement_id} supplied validated evidence",
+                    source_requirement_ids=[requirement_id],
                 )
             )
     return output
@@ -767,6 +832,8 @@ def _adjacent_components(
                     if match.evidence
                     else ""
                 ),
+                source_fields=["adjacent_skill_names"],
+                source_terms={"adjacent_skill_names": [term]},
             )
         )
     if _allows_full_stack_adjacent(criterion):
@@ -789,6 +856,8 @@ def _adjacent_components(
                         matched=True,
                         evidence=match.evidence,
                         note=f"{term} recognized as inferred adjacent full-stack evidence, not a mandatory substitute",
+                        source_fields=["adjacent-skill rule"],
+                        source_terms={"adjacent-skill rule": [term]},
                     )
                 )
     output.extend(_git_related_adjacent_components(criterion, index))
@@ -858,6 +927,8 @@ def _shared_component_from(dimension: str, component: ComponentEvaluation, *, no
         evidence=component.evidence,
         note=note,
         shared_evidence_with=[component.term],
+        source_fields=["evaluation_dimensions"],
+        source_terms={"evaluation_dimensions": [dimension]},
     )
 
 
@@ -889,6 +960,8 @@ def _match_technical_dimension(
                 "and Express/Express.js."
             ),
             shared_evidence_with=component_terms,
+            source_fields=["evaluation_dimensions"],
+            source_terms={"evaluation_dimensions": [dimension]},
         )
     return ComponentEvaluation(
         term=dimension,
@@ -900,6 +973,8 @@ def _match_technical_dimension(
             f"at least {TECH_STACK_BREADTH_THRESHOLD} distinct supported technologies among "
             "React.js, Node.js, and Express/Express.js."
         ),
+        source_fields=["evaluation_dimensions"],
+        source_terms={"evaluation_dimensions": [dimension]},
     )
 
 
@@ -934,6 +1009,8 @@ def _git_related_adjacent_components(criterion: ScoringCriterion, index: list[Ev
             matched=True,
             evidence=evidence,
             note="Plain Git is related evidence for Git hosting tools, not an exact GitHub or GitLab match.",
+            source_fields=["adjacent-skill rule"],
+            source_terms={"adjacent-skill rule": ["Git version control"]},
         )
     ]
 
@@ -982,6 +1059,8 @@ def _match_soft_skill_dimension(dimension: str, index: list[EvidenceText]) -> Co
                     matched=True,
                     evidence=evidence,
                     note=f"matched direct {dimension} evidence via trigger phrase '{pattern}'",
+                    source_fields=["evaluation_dimensions"],
+                    source_terms={"evaluation_dimensions": [dimension]},
                 )
     note = ""
     if _is_communication_dimension(normalized):
@@ -994,6 +1073,8 @@ def _match_soft_skill_dimension(dimension: str, index: list[EvidenceText]) -> Co
         source="evaluation_dimensions",
         component_class=CLASS_EVALUATION_DIMENSION,
         note=note,
+        source_fields=["evaluation_dimensions"],
+        source_terms={"evaluation_dimensions": [dimension]},
     )
 
 
@@ -1100,10 +1181,14 @@ def _component_assessment(
         "controlled_equivalent_components": [item.term for item in controlled_components],
         "adjacent_components_considered": [item.term for item in adjacent_components],
         "source_declared_adjacent_components": [
-            item.term for item in adjacent_components if item.source == "adjacent_skill_names"
+            term
+            for item in components
+            for term in _component_source_terms(item).get("adjacent_skill_names", [])
         ],
         "inferred_adjacent_components": [
-            item.term for item in adjacent_components if item.source.startswith("adjacent-skill rule")
+            term
+            for item in components
+            for term in _component_source_terms(item).get("adjacent-skill rule", [])
         ],
         "adjacent_inference_rules": sorted(
             {item.source for item in adjacent_components if item.source.startswith("adjacent-skill rule")}
@@ -1114,6 +1199,8 @@ def _component_assessment(
                 "term": item.term,
                 "source": item.source,
                 "source_fields": _component_source_fields(item),
+                "source_requirement_ids": list(item.source_requirement_ids),
+                "source_terms": _component_source_terms(item),
                 "class": item.component_class,
                 "classification": item.component_class,
                 "matched": item.matched,
@@ -1158,6 +1245,7 @@ def _single_component_assessment(
                 matched=matched,
                 evidence=evidence if matched else [],
                 note="criterion evaluated from source rubric definition",
+                source_requirement_ids=list(criterion.requirement_ids) if "linked requirement" in source else [],
             )
         ],
         evidence=evidence if matched else [],
@@ -1203,9 +1291,9 @@ def _component_weight(component: ComponentEvaluation) -> float:
 
 def _dedupe_components(components: list[ComponentEvaluation]) -> list[ComponentEvaluation]:
     output: list[ComponentEvaluation] = []
-    positions: dict[tuple[str, str], int] = {}
+    positions: dict[str, int] = {}
     for component in components:
-        key = (normalize_token(component.term), component.component_class)
+        key = canonical_source_term(component.term)
         if key in positions:
             index = positions[key]
             output[index] = _merge_component_evaluation(output[index], component)
@@ -1234,6 +1322,8 @@ def _finalize_component(component: ComponentEvaluation) -> ComponentEvaluation:
         note=note,
         shared_evidence_with=_dedupe_terms(component.shared_evidence_with),
         source_fields=_component_source_fields(component),
+        source_requirement_ids=_dedupe_terms(component.source_requirement_ids),
+        source_terms=_component_source_terms(component),
     )
 
 
@@ -1242,12 +1332,14 @@ def _merge_component_evaluation(left: ComponentEvaluation, right: ComponentEvalu
     return ComponentEvaluation(
         term=left.term,
         source=_merge_component_sources(left.source, right.source),
-        component_class=left.component_class,
+        component_class=_primary_component_class(left.component_class, right.component_class),
         matched=(left.matched or right.matched) and bool(evidence),
         evidence=evidence,
         note=_merge_component_notes(left.note, right.note),
         shared_evidence_with=_dedupe_terms([*left.shared_evidence_with, *right.shared_evidence_with]),
         source_fields=_dedupe_terms([*_component_source_fields(left), *_component_source_fields(right)]),
+        source_requirement_ids=_dedupe_terms([*left.source_requirement_ids, *right.source_requirement_ids]),
+        source_terms=_merge_source_terms(_component_source_terms(left), _component_source_terms(right)),
     )
 
 
@@ -1260,25 +1352,42 @@ def _merge_component_notes(left: str, right: str) -> str:
 
 
 def _component_source_fields(component: ComponentEvaluation) -> list[str]:
-    fields = list(component.source_fields)
-    source = str(component.source)
-    for field_name in (
-        "required_skill_names",
-        "preferred_skill_names",
-        "adjacent_skill_names",
-        "evaluation_dimensions",
-        "required_skills",
-        "preferred_skills",
-    ):
-        if field_name in source:
-            fields.append(field_name)
-    if "linked requirement" in source:
-        fields.append("linked requirement")
-    if source.startswith("adjacent-skill rule"):
-        fields.append("adjacent-skill rule")
-    if "criterion description" in source:
-        fields.append("criterion description")
-    return _dedupe_terms(fields)
+    return represented_source_fields(component)
+
+
+def _component_source_terms(component: ComponentEvaluation) -> dict[str, list[str]]:
+    terms: dict[str, list[str]] = {field: list(values) for field, values in component.source_terms.items()}
+    for field in _component_source_fields(component):
+        if field not in terms and field in {
+            "required_skill_names",
+            "preferred_skill_names",
+            "adjacent_skill_names",
+            "evaluation_dimensions",
+            "required_skills",
+            "preferred_skills",
+            "adjacent-skill rule",
+        }:
+            terms[field] = [component.term]
+    return {field: _dedupe_terms(values) for field, values in terms.items() if values}
+
+
+def _merge_source_terms(left: dict[str, list[str]], right: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for source in (left, right):
+        for field, values in source.items():
+            merged[field] = _dedupe_terms([*merged.get(field, []), *values])
+    return merged
+
+
+def _primary_component_class(left: str, right: str) -> str:
+    priority = {
+        CLASS_REQUIRED: 0,
+        CLASS_EVALUATION_DIMENSION: 1,
+        CLASS_PREFERRED: 2,
+        CLASS_ADJACENT: 3,
+        CLASS_CONTROLLED: 4,
+    }
+    return min((left, right), key=lambda value: priority.get(value, 99))
 
 
 def _experience_qualifications(
@@ -1580,7 +1689,7 @@ def _validate_component_runtime_invariants(evaluation: CriterionEvaluation) -> N
         criterion_id=evaluation.criterion_id,
     )
     for requirement_id in assessment.get("requirement_ids", []):
-        if requirement_id not in assessment.get("represented_requirement_ids", []):
+        if not SourceRepresentationIndex(components).requirement_is_represented(requirement_id) and requirement_id not in assessment.get("represented_requirement_ids", []):
             raise ValueError(f"linked requirement {requirement_id} disappeared from {evaluation.criterion_id}")
     for component in evaluation.component_assessment.get("components", []):
         source = str(component.get("source", ""))
@@ -1607,14 +1716,11 @@ def _require_terms_represented(
     source: str,
     criterion_id: str,
 ) -> None:
-    represented = {
-        normalize_token(str(component.get("term", "")))
-        for component in components
-        if source in str(component.get("source", "")) or source in (component.get("source_fields") or [])
-    }
-    missing = [term for term in terms if normalize_token(term) not in represented]
+    index = SourceRepresentationIndex(components)
+    missing = [term for term in terms if not index.term_is_represented(term, source)]
     if missing:
-        raise ValueError(f"{source} terms disappeared from {criterion_id}: {', '.join(missing)}")
+        detail = index.missing_term_diagnostic(missing[0], source).message(criterion_id)
+        raise ValueError(detail)
 
 
 def _validate_linked_experience_consistency(

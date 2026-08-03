@@ -95,9 +95,12 @@
   -> Date wrong? inspect structured-resume.json experience evidence
   -> Requirement wrong? inspect eligibility.requirement_details
   -> Criterion wrong? inspect component_assessment.components
+  -> Source term disappeared? inspect source_fields/source_terms and run invariant validator
   -> Completeness wrong? inspect evidence_completeness_diagnostics
   -> Report differs? compare evaluation.json, CSV, HTML
-  -> Cache stale? inspect run-manifest.json and .cache key inputs</pre>
+  -> Shared-JD comparison wrong? inspect validate_match_matrix comparison hashes
+  -> Cache stale? inspect run-manifest.json and .cache key inputs
+  -> Final local acceptance? run scripts/run_phase1_acceptance.py</pre>
   </section>
 </body>
 </html>

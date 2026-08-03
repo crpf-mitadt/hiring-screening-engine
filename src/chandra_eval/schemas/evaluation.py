@@ -111,6 +111,7 @@ class CriterionEvaluation(StrictBaseModel):
             evidence_items = component.get("evidence", []) or []
             component_class = component.get("classification") or component.get("class")
             source = component.get("source")
+            source_fields = component.get("source_fields") or []
             if component.get("matched") and not evidence_items:
                 raise ValueError("every matched component must have evidence")
             if component.get("matched"):
@@ -127,6 +128,12 @@ class CriterionEvaluation(StrictBaseModel):
                 raise ValueError("source=evaluation_dimensions implies class=evaluation_dimension")
             if str(source or "").startswith("adjacent-skill rule") and component_class != "adjacent/transferable":
                 raise ValueError("source=adjacent-skill rule implies class=adjacent/transferable")
+            if source_fields == ["preferred_skill_names"] and component_class != "preferred":
+                raise ValueError("source_fields=preferred_skill_names implies class=preferred")
+            if source_fields == ["evaluation_dimensions"] and component_class != "evaluation_dimension":
+                raise ValueError("source_fields=evaluation_dimensions implies class=evaluation_dimension")
+            if source_fields == ["adjacent_skill_names"] and component_class != "adjacent/transferable":
+                raise ValueError("source_fields=adjacent_skill_names implies class=adjacent/transferable")
             if not str(source or "").startswith("evaluation_dimensions") and source not in {
                 "required_skill_names",
                 "preferred_skill_names",
@@ -138,7 +145,18 @@ class CriterionEvaluation(StrictBaseModel):
                 "required_skills",
                 "preferred_skills",
             } and "linked requirement" not in str(component.get("source", "")):
-                if not str(source or "").startswith("adjacent-skill rule"):
+                known_source_fields = {
+                    "required_skill_names",
+                    "preferred_skill_names",
+                    "evaluation_dimensions",
+                    "adjacent_skill_names",
+                    "required_skills",
+                    "preferred_skills",
+                    "linked requirement",
+                    "adjacent-skill rule",
+                    "criterion description",
+                }
+                if not str(source or "").startswith("adjacent-skill rule") and not (set(source_fields) & known_source_fields):
                     raise ValueError("component source must identify a structured field or linked requirement")
             if component.get("matched"):
                 for evidence in evidence_items:
@@ -169,6 +187,7 @@ class EligibilityResult(StrictBaseModel):
 
 
 class CandidateEvaluationReport(StrictBaseModel):
+    artifact_schema_version: str = "candidate-evaluation-v1"
     evaluation_id: str
     candidate_id: str
     job_id: str
@@ -192,3 +211,9 @@ class CandidateEvaluationReport(StrictBaseModel):
         "Decision support only. A qualified human reviewer must review the "
         "evidence before any employment decision."
     )
+
+    @model_validator(mode="after")
+    def validate_artifact_schema_version(self) -> "CandidateEvaluationReport":
+        if self.artifact_schema_version != "candidate-evaluation-v1":
+            raise ValueError(f"Unsupported CandidateEvaluation schema_version: {self.artifact_schema_version}")
+        return self

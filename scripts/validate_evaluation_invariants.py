@@ -18,6 +18,7 @@ from chandra_eval.scoring.dimensions import (
     is_experience_dimension,
     is_tech_stack_versatility_dimension,
 )
+from chandra_eval.scoring.provenance import SourceRepresentationIndex
 
 CheckResult = tuple[str, bool | None, str]
 
@@ -111,14 +112,17 @@ def _component_sources_represented(criteria: list[dict]) -> tuple[str, bool, str
             ("adjacent_skill_names", "adjacent_skill_names"),
             ("evaluation_dimensions", "evaluation_dimensions"),
         ):
-            terms = {str(term).lower() for term in assessment.get(field, [])}
-            represented = {
-                str(component.get("term", "")).lower()
-                for component in components
-                if source in str(component.get("source", "")) or source in (component.get("source_fields") or [])
-            }
-            if not terms.issubset(represented):
-                return "component source representation", False, f"{item['criterion_id']} lost {field}"
+            terms = [str(term) for term in assessment.get(field, [])]
+            index = SourceRepresentationIndex(components)
+            for term in terms:
+                if not index.term_is_represented(term, source):
+                    return "component source representation", False, index.missing_term_diagnostic(term, source).message(item["criterion_id"])
+        for requirement_id in assessment.get("requirement_ids", []):
+            if (
+                not SourceRepresentationIndex(components).requirement_is_represented(str(requirement_id))
+                and requirement_id not in assessment.get("represented_requirement_ids", [])
+            ):
+                return "component source representation", False, f"{item['criterion_id']} lost requirement_id {requirement_id}"
     return "component source representation", True, "all populated fields represented"
 
 
@@ -132,10 +136,13 @@ def _component_classes_correct(criteria: list[dict]) -> tuple[str, bool, str]:
     for item in criteria:
         for component in (item.get("component_assessment") or {}).get("components", []):
             source = str(component.get("source", ""))
+            source_fields = component.get("source_fields") or []
             classification = component.get("classification")
             for marker, expected_class in expected.items():
-                if marker in source and classification != expected_class:
+                if source == marker and classification != expected_class:
                     return "component class correctness", False, f"{item['criterion_id']} {source} is {classification}"
+                if marker in source_fields and len(source_fields) == 1 and classification != expected_class:
+                    return "component class correctness", False, f"{item['criterion_id']} {marker} is {classification}"
             if source.startswith("adjacent-skill rule") and classification != "adjacent/transferable":
                 return "component class correctness", False, f"{item['criterion_id']} inferred adjacent class differs"
     return "component class correctness", True, "component source classes are consistent"

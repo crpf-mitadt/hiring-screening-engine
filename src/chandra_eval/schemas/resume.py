@@ -179,6 +179,7 @@ class ExperienceEntry(StrictBaseModel):
 
 
 class ScoringSafeProfile(StrictBaseModel):
+    schema_version: str = "scoring-safe-profile-v1"
     candidate_id: str
     summary: str = ""
     education: list[EducationEntry] = Field(default_factory=list)
@@ -217,8 +218,15 @@ class ScoringSafeProfile(StrictBaseModel):
     def _collections_default_empty(cls, value):
         return _none_to_list(value)
 
+    @model_validator(mode="after")
+    def validate_schema_version(self) -> "ScoringSafeProfile":
+        if self.schema_version != "scoring-safe-profile-v1":
+            raise ValueError(f"Unsupported ScoringSafeProfile schema_version: {self.schema_version}")
+        return self
+
 
 class CandidateProfile(StrictBaseModel):
+    schema_version: str = "candidate-profile-v1"
     candidate_id: str
     source_document_id: str
     extraction_method: ExtractionMethod = ExtractionMethod.DETERMINISTIC_FALLBACK
@@ -263,6 +271,8 @@ class CandidateProfile(StrictBaseModel):
 
     @model_validator(mode="after")
     def ensure_safe_profile(self) -> "CandidateProfile":
+        if self.schema_version != "candidate-profile-v1":
+            raise ValueError(f"Unsupported CandidateProfile schema_version: {self.schema_version}")
         if self.scoring_safe_profile is None:
             self.scoring_safe_profile = ScoringSafeProfile(
                 candidate_id=self.candidate_id,

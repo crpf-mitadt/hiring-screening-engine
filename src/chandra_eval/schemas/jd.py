@@ -60,6 +60,7 @@ class ScoringCriterion(StrictBaseModel):
 
 
 class StructuredJD(StrictBaseModel):
+    schema_version: str = "structured-jd-v1"
     job_id: str
     source_document_id: str
     extraction_method: ExtractionMethod = ExtractionMethod.DETERMINISTIC_FALLBACK
@@ -79,6 +80,8 @@ class StructuredJD(StrictBaseModel):
 
     @model_validator(mode="after")
     def validate_rubric_weight(self) -> "StructuredJD":
+        if self.schema_version != "structured-jd-v1":
+            raise ValueError(f"Unsupported StructuredJD schema_version: {self.schema_version}")
         if self.scoring_rubric:
             ids = [criterion.criterion_id for criterion in self.scoring_rubric]
             duplicate_ids = sorted({criterion_id for criterion_id in ids if ids.count(criterion_id) > 1})

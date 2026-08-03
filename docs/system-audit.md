@@ -1,10 +1,9 @@
 # System Audit
 
-This audit covers the resume-to-JD evaluation pipeline on `feature/resume-jd-scoring`
-at the stabilization point after commit `20409cb`. It is based on the CLI entry
-points, schemas, ingestion, OCR, LLM structuring, scoring, reports, cache logic,
-tests, and the historical fixes in `a9e620a`, `a970626`, `d1af885`, `38e9345`,
-`0d904f6`, `1619e91`, and `20409cb`.
+This audit covers the Phase 1 resume-to-JD evaluation backend on
+`feature/resume-jd-scoring`. It is based on the CLI entry points, schemas,
+ingestion, OCR, LLM structuring, scoring, reports, cache logic, matrix validation,
+acceptance checks, and historical stabilization fixes.
 
 ## Pipeline Stages
 
@@ -19,6 +18,7 @@ tests, and the historical fixes in `a9e620a`, `a970626`, `d1af885`, `38e9345`,
 | Safety filtering | `build_scoring_safe_profile` | `CandidateProfile` | `ScoringSafeProfile` | scoring-safe profile | Deterministic |
 | Evaluation | `evaluate_candidate_files`, `evaluate_candidate` | `StructuredJD`, `ScoringSafeProfile` | `CandidateEvaluationReport`, `evaluation.json` | canonical report schema | Deterministic |
 | Reports | `write_json_report`, `write_csv_report`, `write_html_report`, `_summary_markdown` | `CandidateEvaluationReport` | JSON, CSV, HTML, Markdown summaries | `CandidateEvaluationReport` | Deterministic |
+| Matrix/acceptance | `validate_match_matrix.py`, `run_phase1_acceptance.py` | structured artifact manifest | comparison JSON/CSV/TSV, acceptance summaries | matrix and acceptance schema v1 | Deterministic |
 
 ## Canonical Data Flow
 
@@ -54,6 +54,8 @@ tests, and the historical fixes in `a9e620a`, `a970626`, `d1af885`, `38e9345`,
 - Experience duration/relevance: `ExperienceQualification`, produced once by `_experience_qualifications`.
 - Criterion semantics: `ScoringCriterion` fields and `component_assessment`.
 - Reports: `CandidateEvaluationReport`; reports must not infer meaning from prose.
+- Source provenance: `SourceRepresentationIndex`; representation is independent of matched status,
+  evidence, and primary component class.
 
 ## Model-Dependent Behavior
 
@@ -173,6 +175,7 @@ Evidence identity is `(source_type, source_document_id, page_number, block_index
 | Eligibility | `EligibilityResult.requirement_details` | matching helpers also used in criteria | linked status disappears | additive component construction and invariants | scoring tests |
 | Matching | `match_terms`, `match_requirement` | semantic fallback and aliases | broad false positives | hierarchy and boundary tests | matching/scoring tests |
 | Component construction | `_criterion_components` | old soft-skill path removed | fields disappearing in mixed criteria | additive source representation | component matrix tests |
+| Source provenance | `SourceRepresentationIndex` | runtime and artifact validators share helper | canonical dedupe erasing source fields | `source_fields` and `source_terms` on canonical components | Data Science/academic provenance tests |
 | Scoring | `_weighted_component_fraction` | discrete mapping helper | arbitrary fractions | approved fractions and arithmetic validation | scoring tests |
 | Completeness | `evidence_completeness_diagnostics` | none | preferred counted as core | class-specific totals | completeness tests |
 | Reports | `CandidateEvaluationReport` | summaries compress fields | prose reconstruction drift | structured summaries by component class | report consistency tests |
@@ -192,3 +195,8 @@ Evidence identity is `(source_type, source_document_id, page_number, block_index
 The repeated bugs occurred because those commits fixed local evaluator branches. The latest
 stabilization removes the remaining mutually exclusive dimension path and validates additive
 component representation.
+
+Phase 1 completion adds canonical source-provenance merging. A canonical component can represent
+multiple JD source fields without duplicate score or completeness credit. The Phase 1 acceptance
+runner and matrix validator are the maintained synthetic acceptance surfaces for this backend
+foundation.

@@ -15,6 +15,21 @@ reference for `src/chandra_eval/scoring`.
 Controlled equivalents are evidence relationships for one owning component. They are not global
 aliases and are never exported to unrelated criteria.
 
+## Source Provenance
+
+Source representation and candidate matching are separate concepts. Every populated structured-JD
+source field must remain represented even when the candidate has no matching evidence. Canonical
+deduplication merges by deterministic source-term identity and keeps one primary scoring class,
+but the component must retain every represented source field in `source_fields` and every original
+source spelling in `source_terms`.
+
+`represented(T, F)` is true when a canonical-equivalent component exists and `F` is present in that
+component's `source_fields`. The check does not depend on `matched`, evidence count, or the
+component's primary class. For example, a single `Data-Science` required/core component may carry
+`source_fields=["required_skill_names", "adjacent_skill_names"]` and
+`source_terms={"adjacent_skill_names": ["Data Science"]}`. That component represents both source
+fields but is counted once for score and completeness.
+
 ## Matching Hierarchy
 
 1. Exact normalized token/phrase match.
@@ -37,6 +52,9 @@ Boundary rules:
 - React and React Native are distinct unless the JD explicitly accepts that relationship.
 - SQL/MySQL/PostgreSQL equivalence is controlled and criterion-local.
 - Generic AI/ML does not satisfy a specific model/framework unless explicitly named or controlled.
+- React/React.js, Node/Node.js, and Express/Express.js are controlled only for the technical
+  breadth dimension and source-provenance canonicalization.
+- MySQL/PostgreSQL are controlled only by database-equivalent rules owned by the database component.
 
 ## Linked Requirements
 
@@ -54,6 +72,7 @@ Every `requirement_id` listed by a criterion must be represented in `component_a
 - Every matched component has evidence.
 - Every positive criterion has evidence.
 - Criterion evidence equals the deduplicated union of matched component evidence.
+- A heuristic, alias, trigger, or shared relationship without source-backed evidence is not a match.
 - Every evidence item must be in scope for that criterion/component.
 - Duplicated source blocks are merged by stable source identity.
 - One source block can support multiple facts only when each fact has its own component-level rationale.

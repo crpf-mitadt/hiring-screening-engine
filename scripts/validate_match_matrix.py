@@ -20,6 +20,8 @@ from chandra_eval.pipeline.candidate_evaluation import evaluate_candidate_files
 PASS = "PASS"
 PIPELINE_FAIL = "PIPELINE_FAIL"
 VALIDATOR_FAIL = "VALIDATOR_FAIL"
+MATRIX_MANIFEST_VERSION = "match-matrix-manifest-v1"
+MATRIX_COMPARISON_VERSION = "match-matrix-comparison-v1"
 
 
 def main() -> int:
@@ -28,6 +30,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--force", action="store_true", help="Overwrite an existing output directory.")
     parser.add_argument("--skip-validator", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="Validate manifest paths and planned outputs without evaluating.")
     args = parser.parse_args()
 
     if args.output_dir.exists() and args.force:
@@ -35,6 +38,21 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    manifest_errors = validate_manifest(manifest, args.output_dir)
+    if args.dry_run:
+        summary = {
+            "schema_version": MATRIX_COMPARISON_VERSION,
+            "dry_run": True,
+            "manifest_errors": manifest_errors,
+            "pair_count": len(manifest.get("pairs", [])),
+        }
+        (args.output_dir / "comparison.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(json.dumps(summary, indent=2))
+        return 1 if manifest_errors else 0
+    if manifest_errors:
+        for error in manifest_errors:
+            print(f"MANIFEST_FAIL: {error}", file=sys.stderr)
+        return 1
     rows = run_matrix(manifest, args.output_dir, skip_validator=args.skip_validator)
     _write_summaries(rows, args.output_dir)
     return 1 if any(row["status"] != PASS for row in rows) else 0
@@ -59,7 +77,12 @@ def run_matrix(manifest: dict[str, Any], output_dir: Path, *, skip_validator: bo
             report = evaluate_candidate_files(resume_path, jd_path, evaluation_path)
             row["evaluation_exit_status"] = 0
             row["evaluation_json"] = str(evaluation_path)
+            row["scoring_version"] = report.scoring_version
             row["final_score"] = report.final_score
+            row["eligibility"] = report.eligibility.status.value
+            row["evidence_completeness"] = report.evidence_completeness
+            row["recommendation_label"] = report.recommendation_label
+            row["human_review_required"] = report.human_review_required
         except Exception as error:
             row["status"] = PIPELINE_FAIL
             row["evaluation_exit_status"] = 1
@@ -119,7 +142,12 @@ def _base_row(test_name: str, job_id: str, candidate_id: str, run_dir: Path) -> 
         "structured_jd_hash": "",
         "structured_resume_hash": "",
         "shared_jd_hash_proven": "",
+        "scoring_version": "",
         "final_score": "",
+        "eligibility": "",
+        "evidence_completeness": "",
+        "recommendation_label": "",
+        "human_review_required": "",
         "run_dir": str(run_dir),
         "evaluation_json": "",
         "error": "",
@@ -203,6 +231,7 @@ def _record_shared_jd_proofs(rows: list[dict[str, Any]], manifest: dict[str, Any
 
 def _write_summaries(rows: list[dict[str, Any]], output_dir: Path) -> None:
     summary = {
+        "schema_version": MATRIX_COMPARISON_VERSION,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "rows": rows,
         "status_counts": {status: len([row for row in rows if row["status"] == status]) for status in (PASS, PIPELINE_FAIL, VALIDATOR_FAIL)},
@@ -215,6 +244,43 @@ def _write_summaries(rows: list[dict[str, Any]], output_dir: Path) -> None:
             writer.writeheader()
             for row in rows:
                 writer.writerow({field: row.get(field, "") for field in fields})
+
+
+def validate_manifest(manifest: dict[str, Any], output_dir: Path) -> list[str]:
+    errors: list[str] = []
+    version = manifest.get("schema_version", MATRIX_MANIFEST_VERSION)
+    if version != MATRIX_MANIFEST_VERSION:
+        errors.append(f"unsupported manifest schema_version: {version}")
+    seen_pairs: set[tuple[str, str, str]] = set()
+    planned_outputs: set[Path] = set()
+    for index, pair in enumerate(manifest.get("pairs", []), start=1):
+        label = pair.get("test_name") or f"pair-{index}"
+        try:
+            jd_path = _required_path(pair, "structured_jd")
+            if not jd_path.name.endswith(".json"):
+                errors.append(f"{label}: structured_jd must be JSON")
+        except Exception as error:
+            errors.append(f"{label}: {error}")
+        try:
+            _required_path(pair, "structured_resume")
+        except Exception as error:
+            errors.append(f"{label}: {error}")
+        metadata = pair.get("ocr_metadata")
+        if metadata and not Path(metadata).expanduser().is_file():
+            errors.append(f"{label}: ocr_metadata not found: {metadata}")
+        job_id = pair.get("job_id") or "job"
+        candidate_id = pair.get("candidate_id") or f"candidate-{index}"
+        key = (str(pair.get("jd_group") or pair.get("structured_jd") or ""), str(job_id), str(candidate_id))
+        if key in seen_pairs:
+            errors.append(f"{label}: duplicate jd_group/job_id/candidate_id")
+        seen_pairs.add(key)
+        run_dir = output_dir / _slug(str(job_id)) / _slug(str(candidate_id))
+        if run_dir in planned_outputs:
+            errors.append(f"{label}: duplicate planned output {run_dir}")
+        planned_outputs.add(run_dir)
+    if not manifest.get("pairs"):
+        errors.append("manifest must contain at least one pair")
+    return errors
 
 
 def _required_path(pair: dict[str, Any], key: str) -> Path:

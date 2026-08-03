@@ -9,6 +9,7 @@ from chandra_eval.pipeline.candidate_evaluation import evaluate_candidate_files
 from chandra_eval.scoring.engine import evaluate_candidate
 from chandra_eval.scoring.evidence_completeness import evidence_completeness
 from chandra_eval.scoring.matching import build_candidate_evidence_index, match_terms
+from chandra_eval.scoring.provenance import SourceRepresentationIndex
 from chandra_eval.schemas.common import EvidenceRef
 from chandra_eval.schemas.evaluation import CriterionEvaluation, CriterionStatus, EligibilityStatus
 from chandra_eval.schemas.jd import JDRequirement, RequirementCategory, RequirementType, ScoringCriterion, StructuredJD
@@ -50,6 +51,18 @@ class ScoringCorrectnessTests(unittest.TestCase):
                 status=CriterionStatus.PARTIALLY_MET,
                 explanation="bad",
             )
+
+    def test_artifact_schema_versions_are_defaulted_and_validated(self) -> None:
+        jd = StructuredJD(job_id="job", source_document_id="jd", job_title="Role")
+        candidate = CandidateProfile.model_validate({"candidate_id": "candidate", "source_document_id": "resume"})
+        report = evaluate_candidate(candidate.scoring_safe_profile, jd)
+
+        self.assertEqual(jd.schema_version, "structured-jd-v1")
+        self.assertEqual(candidate.schema_version, "candidate-profile-v1")
+        self.assertEqual(candidate.scoring_safe_profile.schema_version, "scoring-safe-profile-v1")
+        self.assertEqual(report.artifact_schema_version, "candidate-evaluation-v1")
+        with self.assertRaises(ValidationError):
+            StructuredJD(job_id="job", source_document_id="jd", job_title="Role", schema_version="bad")
 
     def test_accepted_evidence_is_verification_not_missing_requirement(self) -> None:
         candidate = CandidateProfile.model_validate(
@@ -1467,12 +1480,18 @@ class ScoringCorrectnessTests(unittest.TestCase):
                 assessment = reloaded.criterion_evaluations[0].component_assessment
 
                 self.assertIn("Data Science", assessment["source_declared_adjacent_components"])
-                adjacent = [
+                canonical = [
                     item for item in assessment["components"]
-                    if item["classification"] == "adjacent/transferable" and item["term"] == "Data Science"
+                    if item["source_terms"].get("adjacent_skill_names") == ["Data Science"]
                 ]
-                self.assertEqual(len(adjacent), 1)
-                self.assertIn("adjacent_skill_names", adjacent[0]["source_fields"])
+                self.assertEqual(len(canonical), 1)
+                self.assertIn("adjacent_skill_names", canonical[0]["source_fields"])
+                if required:
+                    self.assertEqual(canonical[0]["classification"], "required/core")
+                elif preferred:
+                    self.assertEqual(canonical[0]["classification"], "preferred")
+                else:
+                    self.assertEqual(canonical[0]["classification"], "adjacent/transferable")
                 self.assertLessEqual(reloaded.final_score, 100)
                 self.assertEqual(reloaded.evidence_completeness_diagnostics["deduplicated_source_count"], 1)
 
@@ -1513,6 +1532,107 @@ class ScoringCorrectnessTests(unittest.TestCase):
             for item in component["evidence"]
         }
         self.assertEqual(criterion_keys, component_keys)
+
+    def test_academic_source_provenance_matrix_for_matched_and_unmatched_terms(self) -> None:
+        cases = [
+            ("linked only", {}, {}),
+            ("adjacent only", {}, {"adjacent_skill_names": ["Data Science"]}),
+            ("required only", {"required_skill_names": ["Data Science"]}, {}),
+            ("preferred only", {"preferred_skill_names": ["Data Science"]}, {}),
+            ("dimension only", {"evaluation_dimensions": ["Data Science"]}, {}),
+            ("required adjacent", {"required_skill_names": ["Data Science"]}, {"adjacent_skill_names": ["Data Science"]}),
+            ("preferred adjacent", {"preferred_skill_names": ["Data Science"]}, {"adjacent_skill_names": ["Data Science"]}),
+            ("dimension adjacent", {"evaluation_dimensions": ["Data Science"]}, {"adjacent_skill_names": ["Data Science"]}),
+            ("linked adjacent", {}, {"adjacent_skill_names": ["Data Science"]}),
+            (
+                "all academic families",
+                {
+                    "required_skill_names": ["Artificial Intelligence", "Data Science"],
+                    "preferred_skill_names": ["Machine Learning", "Research"],
+                    "evaluation_dimensions": ["Communication", "Teaching"],
+                },
+                {"adjacent_skill_names": ["Data Science", "Publications"]},
+            ),
+        ]
+        requirement = JDRequirement(
+            requirement_id="req_academic_01",
+            category=RequirementCategory.SKILL,
+            description="Data Science is required.",
+            requirement_type=RequirementType.MINIMUM,
+            mandatory=True,
+        )
+        matching_candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate-match",
+                "source_document_id": "resume",
+                "skills": ["Data Science", "Artificial Intelligence", "Machine Learning", "Research", "Teaching", "Publications"],
+                "experience": [
+                    {
+                        "responsibilities": ["Presented Data Science research and communication updates to faculty."],
+                        "evidence": [_evidence("Presented Data Science research and communication updates to faculty.").model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+        unmatched_candidate = CandidateProfile.model_validate(
+            {"candidate_id": "candidate-unmatched", "source_document_id": "resume", "skills": ["Accounting"]}
+        )
+        for matched in (True, False):
+            candidate = matching_candidate if matched else unmatched_candidate
+            for name, primary, extra in cases:
+                with self.subTest(name=name, matched=matched):
+                    fields = {**primary, **extra}
+                    linked = name.startswith("linked")
+                    jd = StructuredJD(
+                        job_id="job",
+                        source_document_id="jd",
+                        job_title="Assistant Professor BCA/MCA",
+                        mandatory_requirements=[requirement] if linked else [],
+                        scoring_rubric=[
+                            ScoringCriterion(
+                                criterion_id="crit_001",
+                                name="Academic Criterion",
+                                category=RequirementCategory.SKILL,
+                                description="Academic criterion with Data Science and teaching/research breadth.",
+                                weight=100,
+                                requirement_ids=["req_academic_01"] if linked else [],
+                                **fields,
+                            )
+                        ],
+                    )
+                    report = evaluate_candidate(candidate.scoring_safe_profile, jd, evaluation_id="eval-academic")
+                    reloaded = type(report).model_validate_json(report.model_dump_json())
+                    criterion = reloaded.criterion_evaluations[0]
+                    components = criterion.component_assessment["components"]
+                    index = SourceRepresentationIndex(components)
+
+                    if linked:
+                        self.assertTrue(index.requirement_is_represented("req_academic_01"), components)
+                    for field, terms in fields.items():
+                        for term in terms:
+                            self.assertTrue(index.term_is_represented(term, field), (field, term, components))
+                    for component in components:
+                        if component["matched"]:
+                            self.assertGreater(component["evidence_count"], 0)
+                        else:
+                            self.assertIn("source_fields", component)
+                    criterion_keys = {
+                        (item.source_type, item.source_document_id, item.page_number, item.block_index, item.normalized_text or item.exact_text)
+                        for item in criterion.evidence
+                    }
+                    component_keys = {
+                        (item["source_type"], item["source_document_id"], item["page_number"], item["block_index"], item["normalized_text"] or item["exact_text"])
+                        for component in components
+                        if component["matched"]
+                        for item in component["evidence"]
+                    }
+                    self.assertEqual(criterion_keys, component_keys)
+                    if not matched:
+                        self.assertEqual(criterion.weighted_score, 0)
+                    self.assertLessEqual(
+                        reloaded.evidence_completeness_diagnostics["total_adjacent_components_considered"],
+                        len(set(fields.get("adjacent_skill_names", []))),
+                    )
 
     def test_serialization_order_duplicate_and_report_consistency_invariants(self) -> None:
         jd = StructuredJD(

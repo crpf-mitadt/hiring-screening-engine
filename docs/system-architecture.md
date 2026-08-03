@@ -26,6 +26,10 @@ Ingestion, cache keys, OCR artifact validation, JD post-processing, safety filte
 normalization, eligibility, matching, component construction, scoring, completeness, gates, and
 reports are deterministic.
 
+Component construction uses `SourceRepresentationIndex` for source provenance. Candidate matching is
+separate from source representation: unmatched JD source terms remain represented through
+`source_fields` and `source_terms`, while score and completeness count the canonical component once.
+
 ## 5. LLM Operations
 
 Only JD structuring and resume structuring use Gemma. OCR uses Chandra. Raw responses are disabled by
@@ -78,6 +82,17 @@ photos, and protected traits are not part of scoring.
 `calculate_experience_duration` parses month/year ranges and merges overlaps. `ExperienceQualification`
 adds role/date/relevance evidence and is computed once per evaluation date. Eligibility and linked
 criteria reuse it.
+
+## Phase 1 Acceptance
+
+The backend foundation is accepted with:
+
+```bash
+uv run python scripts/run_phase1_acceptance.py --output /tmp/chandra-phase1-acceptance --force
+```
+
+Matrix comparison uses `scripts/validate_match_matrix.py` with `match-matrix-manifest-v1` manifests
+and records shared structured-JD hashes for deterministic candidate comparison.
 
 ## 11. Eligibility
 

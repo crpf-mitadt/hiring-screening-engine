@@ -179,6 +179,29 @@ uv run python scripts/validate_evaluation_invariants.py \
 
 Every line should print `PASS`. Any `FAIL` should be investigated before interpreting the score.
 
+## Phase 1 Acceptance
+
+Run the maintained synthetic acceptance suite before final live acceptance:
+
+```bash
+uv run python scripts/run_phase1_acceptance.py \
+  --output /tmp/chandra-phase1-acceptance \
+  --force
+```
+
+For shared-JD candidate comparison, build a `match-matrix-manifest-v1` manifest and run:
+
+```bash
+uv run python scripts/validate_match_matrix.py \
+  --manifest /tmp/match-matrix.json \
+  --output-dir /tmp/chandra-match-matrix \
+  --force
+```
+
+The matrix runner validates current run directories only for raw-response privacy, records structured
+artifact hashes, continues after individual pair failures, and exits non-zero if any row is not
+`PASS`.
+
 ## Safe New JD/Resume Test
 
 1. Run a mock synthetic match first.
