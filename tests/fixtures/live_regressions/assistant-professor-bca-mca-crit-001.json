@@ -1,0 +1,161 @@
+{
+  "fixture_version": "live-regression-v1",
+  "source": "sanitized Assistant Professor BCA/MCA structured JD",
+  "failure": "crit_001 lost adjacent_skill_names: Data Science (canonical=data science); no canonical-equivalent components",
+  "criterion": {
+    "criterion_id": "crit_001",
+    "name": "Academic Qualifications",
+    "category": "education",
+    "description": "Evaluation of Ph.D., Master's, and Bachelor's degrees in relevant fields with First Class marks.",
+    "weight": 40.0,
+    "mandatory": true,
+    "accepted_evidence": [],
+    "scoring_guidance": "",
+    "requirement_ids": [
+      "req_001",
+      "req_002",
+      "req_003",
+      "req_005"
+    ],
+    "required_skill_names": [],
+    "preferred_skill_names": [],
+    "adjacent_skill_names": [
+      "Data Science"
+    ],
+    "evaluation_dimensions": []
+  },
+  "linked_requirements": [
+    {
+      "requirement_id": "req_001",
+      "category": "education",
+      "description": "Ph.D. degree in Computer Science, Data Science (with a focus on AI/ML/Data), or a closely related field from a recognized institution.",
+      "requirement_type": "minimum",
+      "mandatory": true,
+      "preferred": false,
+      "minimum_value": null,
+      "unit": null,
+      "accepted_equivalents": [],
+      "warnings": [],
+      "evidence": [
+        {
+          "source_type": "text",
+          "source_document_id": "sanitized-live-jd",
+          "page_number": null,
+          "block_index": null,
+          "bbox": null,
+          "exact_text": "Sanitized JD evidence.",
+          "normalized_text": null,
+          "evidence_status": "supported",
+          "notes": "Sanitized live regression fixture."
+        }
+      ]
+    },
+    {
+      "requirement_id": "req_002",
+      "category": "education",
+      "description": "M.E. / M.Tech. / M.S. / MCA or Integrated M.Tech. in a relevant branch.",
+      "requirement_type": "minimum",
+      "mandatory": true,
+      "preferred": false,
+      "minimum_value": null,
+      "unit": null,
+      "accepted_equivalents": [],
+      "warnings": [],
+      "evidence": [
+        {
+          "source_type": "text",
+          "source_document_id": "sanitized-live-jd",
+          "page_number": null,
+          "block_index": null,
+          "bbox": null,
+          "exact_text": "Sanitized JD evidence.",
+          "normalized_text": null,
+          "evidence_status": "supported",
+          "notes": "Sanitized live regression fixture."
+        }
+      ]
+    },
+    {
+      "requirement_id": "req_003",
+      "category": "education",
+      "description": "B.E. / B.Tech. / B.S. / BCA in a relevant branch (e.g., CSE, IT, ECE).",
+      "requirement_type": "minimum",
+      "mandatory": true,
+      "preferred": false,
+      "minimum_value": null,
+      "unit": null,
+      "accepted_equivalents": [],
+      "warnings": [],
+      "evidence": [
+        {
+          "source_type": "text",
+          "source_document_id": "sanitized-live-jd",
+          "page_number": null,
+          "block_index": null,
+          "bbox": null,
+          "exact_text": "Sanitized JD evidence.",
+          "normalized_text": null,
+          "evidence_status": "supported",
+          "notes": "Sanitized live regression fixture."
+        }
+      ]
+    },
+    {
+      "requirement_id": "req_005",
+      "category": "education",
+      "description": "First Class or equivalent (minimum 60% marks in aggregate) in at least one of the qualifying degrees (Bachelor's or Master's).",
+      "requirement_type": "minimum",
+      "mandatory": true,
+      "preferred": false,
+      "minimum_value": null,
+      "unit": null,
+      "accepted_equivalents": [],
+      "warnings": [],
+      "evidence": [
+        {
+          "source_type": "text",
+          "source_document_id": "sanitized-live-jd",
+          "page_number": null,
+          "block_index": null,
+          "bbox": null,
+          "exact_text": "Sanitized JD evidence.",
+          "normalized_text": null,
+          "evidence_status": "supported",
+          "notes": "Sanitized live regression fixture."
+        }
+      ]
+    }
+  ],
+  "jd_context": {
+    "schema_version": null,
+    "job_title": "Assistant Professor (BCA/MCA)",
+    "domain": "Computer Science / IT Education",
+    "seniority": "Assistant Professor",
+    "required_skills": [
+      "Data Science",
+      "Cloud Computing",
+      "Database Management Systems (DBMS)",
+      "Software Engineering",
+      "Data Structures",
+      "Algorithms",
+      "Computer Networks",
+      "Python",
+      "Java"
+    ],
+    "preferred_skills": [
+      "Software Development Life Cycle (SDLC)",
+      "DevOps",
+      "AWS",
+      "Azure",
+      "GCP",
+      "Hadoop",
+      "Spark",
+      "TensorFlow",
+      "PyTorch",
+      "Analytical Reasoning",
+      "Logical Reasoning",
+      "Pedagogical Skills"
+    ],
+    "minimum_experience_months": 24
+  }
+}
