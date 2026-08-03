@@ -120,6 +120,7 @@ class ComponentEvaluation:
     evidence: list[EvidenceRef] = field(default_factory=list)
     note: str = ""
     shared_evidence_with: list[str] = field(default_factory=list)
+    source_fields: list[str] = field(default_factory=list)
 
 
 def discrete_match_fraction(value: float) -> float:
@@ -201,6 +202,7 @@ def _score_criterion(
                 ambiguity.append("One or more experience date ranges are ambiguous and may affect the minimum.")
             fraction = discrete_match_fraction(fraction)
             explanation = qualification.explanation
+            scored_evidence = evidence if fraction > 0 else []
             return CriterionEvaluation(
                 criterion_id=criterion.criterion_id,
                 criterion_name=criterion.name,
@@ -211,18 +213,18 @@ def _score_criterion(
                 weighted_score=round(criterion.weight * fraction, 6),
                 status=_status(fraction, has_terms=True, ambiguous=bool(ambiguity)),
                 explanation=explanation,
-                evidence=evidence,
+                evidence=scored_evidence,
                 missing_information=missing,
                 ambiguity=ambiguity,
                 verification_needed=verification_needed,
                 candidate_requirement=criterion.description,
-                evidence_found=_evidence_found(evidence),
+                evidence_found=_evidence_found(scored_evidence),
                 component_assessment=_single_component_assessment(
                     criterion,
                     term=criterion.description,
                     source="linked requirement" if criterion.requirement_ids else "criterion description",
                     matched=fraction > 0,
-                    evidence=evidence,
+                    evidence=scored_evidence,
                 ),
             )
         else:
@@ -233,6 +235,7 @@ def _score_criterion(
             evidence = match.evidence
             ambiguity = list(match.ambiguity)
             explanation = _match_explanation(match.matches, missing, ambiguity)
+            scored_evidence = evidence if fraction > 0 else []
             return CriterionEvaluation(
                 criterion_id=criterion.criterion_id,
                 criterion_name=criterion.name,
@@ -243,23 +246,24 @@ def _score_criterion(
                 weighted_score=round(criterion.weight * fraction, 6),
                 status=_status(fraction, has_terms=bool(terms), ambiguous=bool(ambiguity)),
                 explanation=explanation,
-                evidence=evidence,
+                evidence=scored_evidence,
                 missing_information=missing,
                 ambiguity=ambiguity,
                 verification_needed=verification_needed,
                 candidate_requirement=criterion.description,
-                evidence_found=_evidence_found(evidence),
+                evidence_found=_evidence_found(scored_evidence),
                 component_assessment=_single_component_assessment(
                     criterion,
                     term=criterion.description,
                     source="criterion description",
                     matched=fraction > 0,
-                    evidence=evidence,
+                    evidence=scored_evidence,
                 ),
             )
     if criterion.category == RequirementCategory.EDUCATION:
         education_match = evaluate_education_requirement(criterion.description, candidate.education)
         fraction = 1.0 if education_match.matched else 0.0
+        scored_evidence = education_match.evidence if fraction > 0 else []
         explanation = (
             "Matched education requirement components. "
             + "; ".join(education_match.notes)
@@ -277,18 +281,18 @@ def _score_criterion(
             weighted_score=round(criterion.weight * fraction, 6),
             status=_status(fraction, has_terms=True, ambiguous=bool(education_match.ambiguity)),
             explanation=explanation,
-            evidence=education_match.evidence,
+            evidence=scored_evidence,
             missing_information=education_match.missing,
             ambiguity=education_match.ambiguity,
             verification_needed=verification_needed,
             candidate_requirement=criterion.description,
-            evidence_found=_evidence_found(education_match.evidence),
+            evidence_found=_evidence_found(scored_evidence),
             component_assessment=_single_component_assessment(
                 criterion,
                 term=criterion.description,
                 source="criterion description",
                 matched=fraction > 0,
-                evidence=education_match.evidence,
+                evidence=scored_evidence,
             ),
         )
 
@@ -476,6 +480,7 @@ def _criterion_from_components(
     candidate_requirement: str,
     ambiguity: list[str] | None = None,
 ) -> CriterionEvaluation:
+    components = _finalize_components(components)
     required_components = [item for item in components if item.component_class == CLASS_REQUIRED]
     preferred_components = [item for item in components if item.component_class == CLASS_PREFERRED]
     dimension_components = [item for item in components if item.component_class == CLASS_EVALUATION_DIMENSION]
@@ -1050,6 +1055,13 @@ def _component_assessment(
     components: list[ComponentEvaluation],
     evidence: list[EvidenceRef],
 ) -> dict:
+    components = _finalize_components(components)
+    evidence = _dedupe_evidence(
+        evidence_item
+        for component in components
+        if component.matched
+        for evidence_item in component.evidence
+    )
     required_components = [item for item in components if item.component_class == CLASS_REQUIRED]
     preferred_components = [item for item in components if item.component_class == CLASS_PREFERRED]
     adjacent_components = [item for item in components if item.component_class == CLASS_ADJACENT]
@@ -1101,6 +1113,7 @@ def _component_assessment(
             {
                 "term": item.term,
                 "source": item.source,
+                "source_fields": _component_source_fields(item),
                 "class": item.component_class,
                 "classification": item.component_class,
                 "matched": item.matched,
@@ -1190,14 +1203,82 @@ def _component_weight(component: ComponentEvaluation) -> float:
 
 def _dedupe_components(components: list[ComponentEvaluation]) -> list[ComponentEvaluation]:
     output: list[ComponentEvaluation] = []
-    seen: set[tuple[str, str]] = set()
+    positions: dict[tuple[str, str], int] = {}
     for component in components:
         key = (normalize_token(component.term), component.component_class)
-        if key in seen:
+        if key in positions:
+            index = positions[key]
+            output[index] = _merge_component_evaluation(output[index], component)
             continue
-        seen.add(key)
+        positions[key] = len(output)
         output.append(component)
     return output
+
+
+def _finalize_components(components: list[ComponentEvaluation]) -> list[ComponentEvaluation]:
+    return [_finalize_component(component) for component in _dedupe_components(components)]
+
+
+def _finalize_component(component: ComponentEvaluation) -> ComponentEvaluation:
+    evidence = _dedupe_evidence(component.evidence)
+    matched = component.matched and bool(evidence)
+    note = component.note
+    if component.matched and not evidence:
+        note = _merge_component_notes(note, "Heuristic match was not credited because no source-backed evidence was available.")
+    return ComponentEvaluation(
+        term=component.term,
+        source=component.source,
+        component_class=component.component_class,
+        matched=matched,
+        evidence=evidence if matched else [],
+        note=note,
+        shared_evidence_with=_dedupe_terms(component.shared_evidence_with),
+        source_fields=_component_source_fields(component),
+    )
+
+
+def _merge_component_evaluation(left: ComponentEvaluation, right: ComponentEvaluation) -> ComponentEvaluation:
+    evidence = _dedupe_evidence([*left.evidence, *right.evidence])
+    return ComponentEvaluation(
+        term=left.term,
+        source=_merge_component_sources(left.source, right.source),
+        component_class=left.component_class,
+        matched=(left.matched or right.matched) and bool(evidence),
+        evidence=evidence,
+        note=_merge_component_notes(left.note, right.note),
+        shared_evidence_with=_dedupe_terms([*left.shared_evidence_with, *right.shared_evidence_with]),
+        source_fields=_dedupe_terms([*_component_source_fields(left), *_component_source_fields(right)]),
+    )
+
+
+def _merge_component_sources(left: str, right: str) -> str:
+    return "; ".join(_dedupe_terms([left, right]))
+
+
+def _merge_component_notes(left: str, right: str) -> str:
+    return "; ".join(_dedupe_terms([part.strip() for value in (left, right) for part in str(value or "").split(";")]))
+
+
+def _component_source_fields(component: ComponentEvaluation) -> list[str]:
+    fields = list(component.source_fields)
+    source = str(component.source)
+    for field_name in (
+        "required_skill_names",
+        "preferred_skill_names",
+        "adjacent_skill_names",
+        "evaluation_dimensions",
+        "required_skills",
+        "preferred_skills",
+    ):
+        if field_name in source:
+            fields.append(field_name)
+    if "linked requirement" in source:
+        fields.append("linked requirement")
+    if source.startswith("adjacent-skill rule"):
+        fields.append("adjacent-skill rule")
+    if "criterion description" in source:
+        fields.append("criterion description")
+    return _dedupe_terms(fields)
 
 
 def _experience_qualifications(
@@ -1529,7 +1610,7 @@ def _require_terms_represented(
     represented = {
         normalize_token(str(component.get("term", "")))
         for component in components
-        if source in str(component.get("source", ""))
+        if source in str(component.get("source", "")) or source in (component.get("source_fields") or [])
     }
     missing = [term for term in terms if normalize_token(term) not in represented]
     if missing:

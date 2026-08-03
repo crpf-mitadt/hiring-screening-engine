@@ -113,6 +113,14 @@ class CriterionEvaluation(StrictBaseModel):
             source = component.get("source")
             if component.get("matched") and not evidence_items:
                 raise ValueError("every matched component must have evidence")
+            if component.get("matched"):
+                for evidence in evidence_items:
+                    if not (
+                        str(evidence.get("source_type") or "").strip()
+                        and str(evidence.get("source_document_id") or "").strip()
+                        and str(evidence.get("exact_text") or evidence.get("normalized_text") or "").strip()
+                    ):
+                        raise ValueError("matched component evidence must include source provenance")
             if source == "preferred_skill_names" and component_class != "preferred":
                 raise ValueError("source=preferred_skill_names implies class=preferred")
             if str(source or "").startswith("evaluation_dimensions") and component_class != "evaluation_dimension":
@@ -136,7 +144,7 @@ class CriterionEvaluation(StrictBaseModel):
                 for evidence in evidence_items:
                     matched_evidence_keys.add(_evidence_key(evidence))
         criterion_keys = {_evidence_key(item.model_dump(mode="json")) for item in self.evidence}
-        if criterion_keys and matched_evidence_keys and criterion_keys != matched_evidence_keys:
+        if criterion_keys != matched_evidence_keys:
             raise ValueError("criterion evidence must be the deduplicated union of matched component evidence")
 
 

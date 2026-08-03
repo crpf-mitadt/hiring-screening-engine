@@ -115,7 +115,7 @@ def _component_sources_represented(criteria: list[dict]) -> tuple[str, bool, str
             represented = {
                 str(component.get("term", "")).lower()
                 for component in components
-                if source in str(component.get("source", ""))
+                if source in str(component.get("source", "")) or source in (component.get("source_fields") or [])
             }
             if not terms.issubset(represented):
                 return "component source representation", False, f"{item['criterion_id']} lost {field}"
@@ -146,6 +146,14 @@ def _matched_components_have_evidence(criteria: list[dict]) -> tuple[str, bool, 
         for component in (item.get("component_assessment") or {}).get("components", []):
             if component.get("matched") and not component.get("evidence"):
                 return "matched component evidence", False, f"{item['criterion_id']} {component.get('term')} lacks evidence"
+            if component.get("matched"):
+                for evidence in component.get("evidence", []) or []:
+                    if not (
+                        str(evidence.get("source_type") or "").strip()
+                        and str(evidence.get("source_document_id") or "").strip()
+                        and str(evidence.get("exact_text") or evidence.get("normalized_text") or "").strip()
+                    ):
+                        return "matched component evidence", False, f"{item['criterion_id']} {component.get('term')} has invalid evidence provenance"
     return "matched component evidence", True, "all matched components have evidence"
 
 

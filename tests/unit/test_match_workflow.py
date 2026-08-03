@@ -1,6 +1,8 @@
 import json
+import importlib.util
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import types
 import unittest
 from unittest.mock import patch
 
@@ -28,6 +30,14 @@ def _candidate_json(path: Path, skill: str = "Python") -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _load_matrix_script():
+    spec = importlib.util.spec_from_file_location("validate_match_matrix", Path("scripts/validate_match_matrix.py"))
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 class MatchWorkflowTests(unittest.TestCase):
@@ -178,6 +188,134 @@ class MatchWorkflowTests(unittest.TestCase):
 
         self.assertFalse(all(item[1] for item in results))
         self.assertIn("http", results[0][2])
+
+    def test_matrix_runner_accounts_for_pass_pipeline_fail_and_validator_fail(self) -> None:
+        matrix = _load_matrix_script()
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "matrix"
+            jd = root / "structured-jd.json"
+            resume_ok = root / "resume-ok.json"
+            resume_bad = root / "resume-bad.json"
+            metadata = root / "metadata.json"
+            jd.write_text(
+                json.dumps(
+                    {
+                        "job_id": "job-shared",
+                        "source_document_id": "jd",
+                        "job_title": "Python Role",
+                        "scoring_rubric": [
+                            {
+                                "criterion_id": "python",
+                                "name": "Python",
+                                "category": "skill",
+                                "description": "Python",
+                                "weight": 100,
+                                "required_skill_names": ["Python"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            _candidate_json(resume_ok, "Python")
+            resume_bad.write_text("{not json", encoding="utf-8")
+            metadata.write_text(json.dumps({"raw_responses_persisted": True}), encoding="utf-8")
+            manifest = {
+                "pairs": [
+                    {
+                        "test_name": "pass",
+                        "jd_group": "shared-python",
+                        "job_id": "job-shared",
+                        "candidate_id": "candidate-pass",
+                        "structured_jd": str(jd),
+                        "structured_resume": str(resume_ok),
+                    },
+                    {
+                        "test_name": "pipeline-fail",
+                        "jd_group": "shared-python",
+                        "job_id": "job-shared",
+                        "candidate_id": "candidate-pipeline-fail",
+                        "structured_jd": str(jd),
+                        "structured_resume": str(resume_bad),
+                    },
+                    {
+                        "test_name": "validator-fail",
+                        "jd_group": "shared-python",
+                        "job_id": "job-shared",
+                        "candidate_id": "candidate-validator-fail",
+                        "structured_jd": str(jd),
+                        "structured_resume": str(resume_ok),
+                        "ocr_metadata": str(metadata),
+                    },
+                ]
+            }
+
+            rows = matrix.run_matrix(manifest, output, skip_validator=True)
+            matrix._write_summaries(rows, output)
+
+            self.assertEqual([row["status"] for row in rows], ["PASS", "PIPELINE_FAIL", "VALIDATOR_FAIL"])
+            self.assertEqual(rows[1]["evaluation_exit_status"], 1)
+            self.assertFalse(rows[1]["evaluation_json"])
+            self.assertIn("raw responses", rows[2]["error"])
+            self.assertEqual(len({row["structured_jd_hash"] for row in rows if row["structured_jd_hash"]}), 1)
+            self.assertTrue(all(row["shared_jd_hash_proven"] for row in rows))
+            summary = json.loads((output / "comparison.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["status_counts"]["PASS"], 1)
+            csv_columns = (output / "comparison.csv").read_text(encoding="utf-8").splitlines()[0].split(",")
+            tsv_columns = (output / "comparison.tsv").read_text(encoding="utf-8").splitlines()[0].split("\t")
+            self.assertEqual(csv_columns, tsv_columns)
+
+    def test_matrix_runner_marks_validator_traceback_without_fail_text(self) -> None:
+        matrix = _load_matrix_script()
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "matrix"
+            jd = root / "structured-jd.json"
+            resume = root / "resume.json"
+            jd.write_text(
+                json.dumps(
+                    {
+                        "job_id": "job",
+                        "source_document_id": "jd",
+                        "job_title": "Python Role",
+                        "scoring_rubric": [
+                            {
+                                "criterion_id": "python",
+                                "name": "Python",
+                                "category": "skill",
+                                "description": "Python",
+                                "weight": 100,
+                                "required_skill_names": ["Python"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            _candidate_json(resume, "Python")
+            manifest = {
+                "pairs": [
+                    {
+                        "test_name": "validator-traceback",
+                        "job_id": "job",
+                        "candidate_id": "candidate",
+                        "structured_jd": str(jd),
+                        "structured_resume": str(resume),
+                    }
+                ]
+            }
+
+            with patch.object(
+                matrix,
+                "_run_validator",
+                return_value=types.SimpleNamespace(returncode=2, stdout="", stderr="Traceback: FileNotFoundError"),
+            ):
+                rows = matrix.run_matrix(manifest, output)
+
+            self.assertEqual(rows[0]["status"], "VALIDATOR_FAIL")
+            self.assertEqual(rows[0]["validator_exit_status"], 2)
+            self.assertIn("Traceback", rows[0]["error"])
 
 
 if __name__ == "__main__":

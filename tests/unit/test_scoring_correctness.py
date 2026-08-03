@@ -1192,6 +1192,96 @@ class ScoringCorrectnessTests(unittest.TestCase):
         self.assertIn("Communication", supported("Presented findings to stakeholders and authored documentation."))
         self.assertIn("Problem-solving", supported("Diagnosed the outage root cause and resolved the production issue."))
 
+    def test_soft_skill_trigger_without_source_evidence_gets_no_credit(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="soft",
+                    name="Communication",
+                    category=RequirementCategory.LEADERSHIP,
+                    description="Communication clarity.",
+                    weight=100,
+                    evaluation_dimensions=["Communication clarity"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "summary": "Presented findings to stakeholders.",
+            }
+        )
+
+        criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+        component = criterion.component_assessment["components"][0]
+
+        self.assertFalse(component["matched"])
+        self.assertEqual(component["evidence"], [])
+        self.assertEqual(criterion.match_fraction, 0)
+        self.assertEqual(criterion.weighted_score, 0)
+
+    def test_shared_soft_skill_evidence_satisfies_linked_dimension(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            mandatory_requirements=[
+                JDRequirement(
+                    requirement_id="req_soft_01",
+                    category=RequirementCategory.LEADERSHIP,
+                    description="Communication clarity is required.",
+                    requirement_type=RequirementType.MINIMUM,
+                    mandatory=True,
+                )
+            ],
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="soft",
+                    name="Communication",
+                    category=RequirementCategory.LEADERSHIP,
+                    description="Communication clarity.",
+                    weight=100,
+                    requirement_ids=["req_soft_01"],
+                    evaluation_dimensions=["Communication clarity dimension"],
+                )
+            ],
+        )
+        evidence_text = "Presented communication clarity updates to stakeholders."
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "experience": [
+                    {
+                        "responsibilities": [evidence_text],
+                        "evidence": [_evidence(evidence_text).model_dump(mode="json")],
+                    }
+                ],
+            }
+        )
+
+        criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+        assessment = criterion.component_assessment
+
+        self.assertIn("Communication clarity dimension", assessment["supported_evaluation_dimensions"])
+        dimension = next(item for item in assessment["components"] if item["classification"] == "evaluation_dimension")
+        self.assertTrue(dimension["matched"])
+        self.assertEqual(dimension["shared_evidence_with"], ["Communication clarity"])
+        self.assertEqual(
+            {
+                (item["source_type"], item["source_document_id"], item["normalized_text"] or item["exact_text"])
+                for item in dimension["evidence"]
+            },
+            {
+                (item.source_type, item.source_document_id, item.normalized_text or item.exact_text)
+                for item in criterion.evidence
+            },
+        )
+
     def test_dimensions_do_not_delete_linked_required_preferred_or_adjacent_components(self) -> None:
         jd = StructuredJD(
             job_id="job",
@@ -1337,6 +1427,92 @@ class ScoringCorrectnessTests(unittest.TestCase):
                     self.assertIn(term, assessment["evaluation_dimension_components"])
                 if linked:
                     self.assertIn("req_docker", assessment["represented_requirement_ids"])
+
+    def test_adjacent_data_science_source_survives_overlap_and_round_trip(self) -> None:
+        cases = [
+            ("adjacent only", [], []),
+            ("adjacent and preferred", [], ["Data Science"]),
+            ("adjacent and required", ["Data Science"], []),
+            ("case punctuation variants", ["Data-Science"], ["data science"]),
+        ]
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["Data Science"],
+            }
+        )
+        for name, required, preferred in cases:
+            with self.subTest(name=name):
+                jd = StructuredJD(
+                    job_id="job",
+                    source_document_id="jd",
+                    job_title="Assistant Professor",
+                    scoring_rubric=[
+                        ScoringCriterion(
+                            criterion_id="crit_001",
+                            name="Academic Breadth",
+                            category=RequirementCategory.SKILL,
+                            description="Academic and technical breadth.",
+                            weight=100,
+                            required_skill_names=required,
+                            preferred_skill_names=preferred,
+                            adjacent_skill_names=["Data Science"],
+                        )
+                    ],
+                )
+
+                report = evaluate_candidate(candidate.scoring_safe_profile, jd, evaluation_id="eval-adjacent")
+                reloaded = type(report).model_validate_json(report.model_dump_json())
+                assessment = reloaded.criterion_evaluations[0].component_assessment
+
+                self.assertIn("Data Science", assessment["source_declared_adjacent_components"])
+                adjacent = [
+                    item for item in assessment["components"]
+                    if item["classification"] == "adjacent/transferable" and item["term"] == "Data Science"
+                ]
+                self.assertEqual(len(adjacent), 1)
+                self.assertIn("adjacent_skill_names", adjacent[0]["source_fields"])
+                self.assertLessEqual(reloaded.final_score, 100)
+                self.assertEqual(reloaded.evidence_completeness_diagnostics["deduplicated_source_count"], 1)
+
+    def test_criterion_evidence_is_exact_deduplicated_component_union(self) -> None:
+        jd = StructuredJD(
+            job_id="job",
+            source_document_id="jd",
+            job_title="Developer",
+            scoring_rubric=[
+                ScoringCriterion(
+                    criterion_id="crit",
+                    name="Stack",
+                    category=RequirementCategory.SKILL,
+                    description="Python plus adjacent Data Science.",
+                    weight=100,
+                    required_skill_names=["Python"],
+                    adjacent_skill_names=["Data Science"],
+                )
+            ],
+        )
+        candidate = CandidateProfile.model_validate(
+            {
+                "candidate_id": "candidate",
+                "source_document_id": "resume",
+                "skills": ["Python", "Data Science"],
+            }
+        )
+
+        criterion = evaluate_candidate(candidate.scoring_safe_profile, jd).criterion_evaluations[0]
+        criterion_keys = {
+            (item.source_type, item.source_document_id, item.page_number, item.block_index, item.normalized_text or item.exact_text)
+            for item in criterion.evidence
+        }
+        component_keys = {
+            (item["source_type"], item["source_document_id"], item["page_number"], item["block_index"], item["normalized_text"] or item["exact_text"])
+            for component in criterion.component_assessment["components"]
+            if component["matched"]
+            for item in component["evidence"]
+        }
+        self.assertEqual(criterion_keys, component_keys)
 
     def test_serialization_order_duplicate_and_report_consistency_invariants(self) -> None:
         jd = StructuredJD(
