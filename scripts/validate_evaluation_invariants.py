@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+from html import unescape
 import json
 import re
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 from chandra_eval.scoring.dimensions import (
     TECH_STACK_BREADTH_THRESHOLD,
@@ -368,12 +370,7 @@ def _raw_response_privacy(ocr_metadata: dict[str, Any] | None) -> tuple[str, boo
 def _report_consistency(evaluation: dict[str, Any], csv_report: Path | None, html_report: Path | None) -> tuple[str, bool, str]:
     if csv_report is None and html_report is None:
         return "report consistency", None, "report files not supplied"
-    expected_terms = {
-        component.get("term")
-        for item in evaluation.get("criterion_evaluations", [])
-        for component in (item.get("component_assessment") or {}).get("components", [])
-        if component.get("matched")
-    }
+    expected_terms = _matched_component_terms(evaluation)
     checked: list[str] = []
     if csv_report:
         if not csv_report.is_file():
@@ -381,17 +378,55 @@ def _report_consistency(evaluation: dict[str, Any], csv_report: Path | None, htm
         with csv_report.open(encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
         csv_text = " ".join(row.get("component_assessment", "") for row in rows)
-        if not all(term in csv_text for term in expected_terms if term):
-            return "report consistency", False, "CSV report is missing matched component terms"
+        missing = _missing_report_terms(expected_terms, csv_text)
+        if missing:
+            return "report consistency", False, f"CSV report is missing matched component terms: {', '.join(missing)}"
         checked.append("CSV")
     if html_report:
         if not html_report.is_file():
             return "report consistency", False, f"HTML report not found: {html_report}"
-        html_text = html_report.read_text(encoding="utf-8")
-        if not all(term in html_text for term in expected_terms if term):
-            return "report consistency", False, "HTML report is missing matched component terms"
+        html_text = _human_visible_html_text(html_report.read_text(encoding="utf-8"))
+        missing = _missing_report_terms(expected_terms, html_text)
+        if missing:
+            return "report consistency", False, f"HTML report is missing matched component terms: {', '.join(missing)}"
         checked.append("HTML")
     return "report consistency", True, f"checked {' and '.join(checked)} report consistency"
+
+
+def _matched_component_terms(evaluation: dict[str, Any]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in evaluation.get("criterion_evaluations", []):
+        for component in (item.get("component_assessment") or {}).get("components", []):
+            term = str(component.get("term") or "").strip()
+            if not component.get("matched") or not term:
+                continue
+            key = _normalize_report_text(term)
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(term)
+    return output
+
+
+def _missing_report_terms(expected_terms: list[str], report_text: str) -> list[str]:
+    normalized_report = _normalize_report_text(report_text)
+    return [
+        term
+        for term in expected_terms
+        if _normalize_report_text(term) not in normalized_report
+    ]
+
+
+def _human_visible_html_text(html_text: str) -> str:
+    without_scripts = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html_text)
+    without_tags = re.sub(r"(?s)<[^>]*>", " ", without_scripts)
+    return unescape(without_tags)
+
+
+def _normalize_report_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", unescape(str(text))).replace("\u00a0", " ")
+    return re.sub(r"\s+", " ", normalized).casefold().strip()
 
 
 def _evidence_key(item: dict[str, Any]) -> tuple:

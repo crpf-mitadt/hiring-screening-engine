@@ -1,0 +1,34 @@
+{
+  "fixture_version": "report-contract-v1",
+  "case_id": "admission-counsellor-candidate-002-report-shape",
+  "final_score": 6.25,
+  "eligibility": "REVIEW",
+  "evidence_completeness": 0.331,
+  "criteria": [
+    {
+      "criterion_id": "crit_control",
+      "criterion_name": "Passing Report Shape Control",
+      "category": "skill",
+      "weight": 25.0,
+      "match_fraction": 0.25,
+      "weighted_score": 6.25,
+      "components": [
+        {
+          "term": "Lead follow-up",
+          "class": "required/core",
+          "source": "required_skill_names",
+          "source_fields": ["required_skill_names"],
+          "evidence_count": 1
+        }
+      ],
+      "unmatched_components": [
+        {
+          "term": "Education fairs",
+          "class": "adjacent/transferable",
+          "source": "adjacent_skill_names",
+          "source_fields": ["adjacent_skill_names"]
+        }
+      ]
+    }
+  ]
+}

@@ -93,6 +93,7 @@ def _requirement_evidence_text(item: dict) -> str:
 
 def _component_summary(assessment: dict) -> str:
     parts: list[str] = []
+    parts.extend(_matched_component_parts(assessment))
     for label, key in (
         ("required/core", "required_core_components"),
         ("core", "supported_core_components"),
@@ -112,6 +113,27 @@ def _component_summary(assessment: dict) -> str:
             parts.append(f"{label}: {', '.join(values)}")
     parts.extend(_missing_dimension_parts(assessment))
     return " | ".join(parts) or "No in-scope components matched."
+
+
+def _matched_component_parts(assessment: dict) -> list[str]:
+    matched = []
+    seen: set[tuple[str, str]] = set()
+    for component in assessment.get("components") or []:
+        if not component.get("matched"):
+            continue
+        term = str(component.get("term") or "").strip()
+        if not term:
+            continue
+        classification = str(component.get("classification") or component.get("class") or "component").strip()
+        key = (term, classification)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence_count = component.get("evidence_count")
+        if evidence_count is None:
+            evidence_count = len(component.get("evidence") or [])
+        matched.append(f"{term} [{classification}; evidence={evidence_count}]")
+    return [f"matched components: {', '.join(matched)}"] if matched else []
 
 
 def _missing_dimension_parts(assessment: dict) -> list[str]:
