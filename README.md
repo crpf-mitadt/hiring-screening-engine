@@ -2,6 +2,20 @@
 
 Evaluation pipeline for running Chandra OCR-2 on resumes and preparing a future resume-to-job-description matching workflow.
 
+## Start here / Project KT
+
+This is the specialized AI screening-engine repository. It owns document
+ingestion, Chandra OCR, Gemma-based structured extraction, scoring-safe schemas,
+deterministic evaluation, evidence provenance, invariants, and reports.
+
+New contributors should begin with the canonical cross-repository
+[`PROJECT_KT.md`](https://github.com/danishsshaikh/hiring-platform/blob/feature/bulk-screening/docs/PROJECT_KT.md)
+in the sibling
+[`hiring-platform`](https://github.com/danishsshaikh/hiring-platform) repository.
+The platform is the full-stack recruitment application and invokes this engine
+through a provider/artifact boundary; this repository is not the frontend or
+recruitment database.
+
 ## Current status
 
 - Chandra OCR-2 runs through the existing `llama.cpp` server
