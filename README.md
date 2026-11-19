@@ -16,6 +16,22 @@ The platform is the full-stack recruitment application and invokes this engine
 through a provider/artifact boundary; this repository is not the frontend or
 recruitment database.
 
+## Collaboration workflow
+
+`main` is the protected release baseline. `develop` is the protected integration
+branch for reviewed student work. Approved students receive repository write
+access through the `Student Contributors` team, then create a task-specific
+`student/<username>/<feature>` branch from `develop` and open a pull request back
+to `develop`.
+
+Engine pull requests must pass `engine-unit-tests`, `engine-lint`,
+`engine-phase1-acceptance`, and `repository-integrity`, resolve review
+conversations, and receive project-lead CODEOWNERS approval. Only the authorized
+maintainer merges protected branches; direct pushes, force pushes, and deletion
+are blocked for contributors. Releases move from `develop` to `main` through
+another reviewed, passing pull request. Contract changes must link the paired
+platform pull request and state any required merge order.
+
 ## Current status
 
 - Chandra OCR-2 runs through the existing `llama.cpp` server
