@@ -9,9 +9,9 @@ ingestion, Chandra OCR, Gemma-based structured extraction, scoring-safe schemas,
 deterministic evaluation, evidence provenance, invariants, and reports.
 
 New contributors should begin with the canonical cross-repository
-[`PROJECT_KT.md`](https://github.com/danishsshaikh/hiring-platform/blob/feature/bulk-screening/docs/PROJECT_KT.md)
+[`PROJECT_KT.md`](https://github.com/crpf-mitadt/hiring-platform/blob/main/docs/PROJECT_KT.md)
 in the sibling
-[`hiring-platform`](https://github.com/danishsshaikh/hiring-platform) repository.
+[`hiring-platform`](https://github.com/crpf-mitadt/hiring-platform) repository.
 The platform is the full-stack recruitment application and invokes this engine
 through a provider/artifact boundary; this repository is not the frontend or
 recruitment database.

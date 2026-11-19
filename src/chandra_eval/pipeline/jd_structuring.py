@@ -160,7 +160,6 @@ def _mandatory_skill_terms(jd: StructuredJD) -> set[str]:
     terms: set[str] = set()
     for requirement in jd.mandatory_requirements:
         text = requirement.description
-        lowered = text.lower()
         if requirement.category.value != "skill":
             continue
         for skill in [*jd.required_skills, *requirement.accepted_equivalents]:

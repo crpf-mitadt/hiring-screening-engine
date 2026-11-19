@@ -42,6 +42,7 @@ from chandra_eval.schemas.evaluation import (
     CandidateEvaluationReport,
     CriterionEvaluation,
     CriterionStatus,
+    EligibilityResult,
     EligibilityStatus,
 )
 from chandra_eval.schemas.jd import RequirementCategory, ScoringCriterion, StructuredJD
@@ -518,9 +519,7 @@ def _criterion_from_components(
 ) -> CriterionEvaluation:
     components = _finalize_components(components)
     required_components = [item for item in components if item.component_class == CLASS_REQUIRED]
-    preferred_components = [item for item in components if item.component_class == CLASS_PREFERRED]
     dimension_components = [item for item in components if item.component_class == CLASS_EVALUATION_DIMENSION]
-    adjacent_components = [item for item in components if item.component_class == CLASS_ADJACENT]
     matched_components = [item for item in components if item.matched]
     missing_required = [item.term for item in [*required_components, *dimension_components] if not item.matched]
     evidence = _dedupe_evidence([evidence for item in matched_components for evidence in item.evidence])
@@ -1385,9 +1384,11 @@ def _component_source_fields(component: ComponentEvaluation) -> list[str]:
 
 
 def _component_source_terms(component: ComponentEvaluation) -> dict[str, list[str]]:
-    terms: dict[str, list[str]] = {field: list(values) for field, values in component.source_terms.items()}
-    for field in _component_source_fields(component):
-        if field not in terms and field in {
+    terms: dict[str, list[str]] = {
+        source_field: list(values) for source_field, values in component.source_terms.items()
+    }
+    for source_field in _component_source_fields(component):
+        if source_field not in terms and source_field in {
             "required_skill_names",
             "preferred_skill_names",
             "adjacent_skill_names",
@@ -1396,15 +1397,15 @@ def _component_source_terms(component: ComponentEvaluation) -> dict[str, list[st
             "preferred_skills",
             "adjacent-skill rule",
         }:
-            terms[field] = [component.term]
-    return {field: _dedupe_terms(values) for field, values in terms.items() if values}
+            terms[source_field] = [component.term]
+    return {source_field: _dedupe_terms(values) for source_field, values in terms.items() if values}
 
 
 def _merge_source_terms(left: dict[str, list[str]], right: dict[str, list[str]]) -> dict[str, list[str]]:
     merged: dict[str, list[str]] = {}
     for source in (left, right):
-        for field, values in source.items():
-            merged[field] = _dedupe_terms([*merged.get(field, []), *values])
+        for source_field, values in source.items():
+            merged[source_field] = _dedupe_terms([*merged.get(source_field, []), *values])
     return merged
 
 

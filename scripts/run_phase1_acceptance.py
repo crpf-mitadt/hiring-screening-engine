@@ -12,9 +12,6 @@ from typing import Any, Callable
 
 from chandra_eval.ocr.full_document import write_ocr_artifacts
 from chandra_eval.pipeline.pilot import run_synthetic_pilot
-from chandra_eval.reports.csv_report import write_csv_report
-from chandra_eval.reports.html_report import write_html_report
-from chandra_eval.reports.json_report import write_json_report
 from chandra_eval.scoring.engine import evaluate_candidate
 from chandra_eval.scoring.provenance import SourceRepresentationIndex
 from chandra_eval.schemas.common import EvidenceRef
