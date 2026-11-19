@@ -150,5 +150,5 @@ Phase 1 Python service boundaries; they are not implemented here.
 ## Final Tyrone Acceptance
 
 Phase 1 is complete when the repository checks and Phase 1 acceptance runner pass locally and the
-final Tyrone command validates Chetan plus the shared-JD Sujay/Sunil matrix from existing structured
+final Tyrone command validates historical-case-a plus the shared-JD historical-case-b/historical-case-c matrix from existing structured
 artifacts without OCR or Gemma regeneration.
