@@ -93,11 +93,14 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: git diff --check "origin/${BASE_REF}...HEAD"
       - name: Check pushed diff
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
         env:
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
         run: git diff --check "${BEFORE_SHA}...${HEAD_SHA}"
+      - name: Check newly created branch
+        if: github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000'
+        run: git diff-tree --check --root -r HEAD
       - name: Check manually dispatched revision
         if: github.event_name == 'workflow_dispatch'
         run: git diff --check HEAD^ HEAD
